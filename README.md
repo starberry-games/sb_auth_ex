@@ -23,7 +23,7 @@ Host `sb_auth_ex` in a private GitHub repository and reference it via SSH:
 ```elixir
 defp deps do
   [
-    {:sb_auth_ex, git: "git@github.com:yourusername/sb_auth_ex.git"},
+    {:sb_auth_ex, git: "git@github.com:starberry-games/sb_auth_ex.git"},
     # ... other deps
   ]
 end
@@ -32,8 +32,8 @@ end
 You can also pin to a specific tag or branch:
 
 ```elixir
-{:sb_auth_ex, git: "git@github.com:yourusername/sb_auth_ex.git", tag: "v0.1.0"}
-{:sb_auth_ex, git: "git@github.com:yourusername/sb_auth_ex.git", branch: "main"}
+{:sb_auth_ex, git: "git@github.com:starberry-games/sb_auth_ex.git", tag: "v0.1.0"}
+{:sb_auth_ex, git: "git@github.com:starberry-games/sb_auth_ex.git", branch: "main"}
 ```
 
 Anyone with SSH access to the repo can run `mix deps.get` to fetch the package.
