@@ -117,8 +117,12 @@ defmodule SbAuthEx.AuthController do
 
     case Accounts.upsert_identity_from_provider!(user_id, email) do
       {:ok, identity} ->
-        # Maybe auto-link to app user
-        {:ok, identity} = Accounts.maybe_auto_link_by_email(identity)
+        # Maybe auto-link to app user (don't fail login if linking fails)
+        identity =
+          case Accounts.maybe_auto_link_by_email(identity) do
+            {:ok, linked_identity} -> linked_identity
+            {:error, _} -> identity
+          end
 
         # Call optional callback
         maybe_call_on_login(identity)
