@@ -103,11 +103,6 @@ config :sb_auth_ex,
   after_login_path: "/",
   after_logout_path: "/"
 
-# Optional: auto-link identities to users by email
-config :sb_auth_ex,
-  auto_link_by_email: true,
-  get_user_id_by_email: {MyApp.Users, :get_user_id_by_email}
-
 # Optional: callback after each successful login
 config :sb_auth_ex,
   on_login: {MyApp.Users, :on_login}
@@ -298,32 +293,7 @@ identity.sb_id     # "user_01ABC..."
 
 You can add a users table later when you need app-specific user data.
 
-#### Strategy 2: Auto-Link by Email
-
-If users already exist in your app, auto-link when they log in via WorkOS:
-
-```elixir
-# config/config.exs
-config :sb_auth_ex,
-  auto_link_by_email: true,
-  get_user_id_by_email: {MyApp.Users, :get_user_id_by_email}
-```
-
-```elixir
-# lib/my_app/users.ex
-defmodule MyApp.Users do
-  def get_user_id_by_email(email) do
-    case Repo.get_by(User, email: email) do
-      nil -> nil        # No user found, identity stays unlinked
-      user -> user.id   # Return user ID to link
-    end
-  end
-end
-```
-
-When a user logs in, if their email matches an existing user, the identity is automatically linked.
-
-#### Strategy 3: Manual Linking
+#### Strategy 2: Manual Linking
 
 Link identities to users manually when it makes sense:
 
@@ -343,7 +313,7 @@ identity = SbAuthEx.Accounts.get_identity_by_email("user@example.com")
 SbAuthEx.Accounts.link_to_user(identity, user.id)
 ```
 
-#### Strategy 4: Add User Table Later
+#### Strategy 3: Add User Table Later
 
 Start without a users table, add one when needed:
 
@@ -410,31 +380,6 @@ config :sb_auth_ex,
   on_login: fn identity, conn ->
     IO.puts("User logged in: #{identity.email}")
   end
-```
-
-#### get_user_id_by_email
-
-Called during login to auto-link identities to existing users. Only called if:
-- `auto_link_by_email: true` is configured
-- Identity doesn't already have a `user_id` (not already linked)
-
-```elixir
-# config/config.exs
-config :sb_auth_ex,
-  auto_link_by_email: true,
-  get_user_id_by_email: {MyApp.Users, :get_user_id_by_email}
-```
-
-```elixir
-# lib/my_app/users.ex
-defmodule MyApp.Users do
-  def get_user_id_by_email(email) do
-    case Repo.get_by(User, email: email) do
-      nil -> nil        # No user found, identity stays unlinked
-      user -> user.id   # Return user ID to link
-    end
-  end
-end
 ```
 
 ### Available Functions

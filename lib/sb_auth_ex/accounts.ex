@@ -84,40 +84,4 @@ defmodule SbAuthEx.Accounts do
     |> repo().update()
   end
 
-  @doc """
-  Attempts to auto-link an identity to a user by matching email.
-  Calls the configured callback to find the user.
-
-  Does nothing if:
-  - `auto_link_by_email` is not enabled
-  - Identity already has a `user_id` (already linked)
-  - Callback returns nil (no matching user)
-
-  Returns `{:ok, identity}` if linked, or `{:ok, identity}` unchanged otherwise.
-  """
-  def maybe_auto_link_by_email(%Identity{user_id: user_id} = identity) when not is_nil(user_id) do
-    # Already linked, nothing to do
-    {:ok, identity}
-  end
-
-  def maybe_auto_link_by_email(%Identity{} = identity) do
-    case Application.get_env(:sb_auth_ex, :auto_link_by_email, false) do
-      false ->
-        {:ok, identity}
-
-      true ->
-        case get_user_by_email_callback(identity.email) do
-          nil -> {:ok, identity}
-          user_id -> link_to_user(identity, user_id)
-        end
-    end
-  end
-
-  defp get_user_by_email_callback(email) do
-    case Application.get_env(:sb_auth_ex, :get_user_id_by_email) do
-      nil -> nil
-      {module, function} -> apply(module, function, [email])
-      fun when is_function(fun, 1) -> fun.(email)
-    end
-  end
 end
