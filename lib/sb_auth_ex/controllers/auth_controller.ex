@@ -125,7 +125,7 @@ defmodule SbAuthEx.AuthController do
           end
 
         # Call optional callback
-        maybe_call_on_login(identity)
+        maybe_call_on_login(conn, identity)
 
         # Clear old session completely and set fresh values
         conn
@@ -141,11 +141,11 @@ defmodule SbAuthEx.AuthController do
     end
   end
 
-  defp maybe_call_on_login(identity) do
+  defp maybe_call_on_login(conn, identity) do
     case Application.get_env(:sb_auth_ex, :on_login) do
       nil -> :ok
-      {module, function} -> apply(module, function, [identity])
-      fun when is_function(fun, 1) -> fun.(identity)
+      {module, function} -> apply(module, function, [identity, conn])
+      fun when is_function(fun, 2) -> fun.(identity, conn)
     end
   end
 

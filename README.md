@@ -385,12 +385,15 @@ config :sb_auth_ex,
 ```elixir
 # lib/my_app/users.ex
 defmodule MyApp.Users do
-  def on_login(identity) do
+  def on_login(identity, conn) do
     # Check if this is a new user (no linked user yet)
     if is_nil(identity.user_id) do
       # Send welcome email, create profile, etc.
       MyApp.Mailer.send_welcome_email(identity.email)
     end
+
+    # Access request info from conn if needed
+    user_agent = Plug.Conn.get_req_header(conn, "user-agent")
 
     # Sync with external service
     MyApp.Analytics.track_login(identity)
@@ -404,7 +407,7 @@ You can also use an anonymous function:
 
 ```elixir
 config :sb_auth_ex,
-  on_login: fn identity ->
+  on_login: fn identity, conn ->
     IO.puts("User logged in: #{identity.email}")
   end
 ```
