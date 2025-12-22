@@ -1,5 +1,6 @@
 _build/
-  deps/
-  *.ez
-  *.beam
-  .elixir_ls/
+/deps/
+*.ez
+*.beam
+.elixir_ls/
+settings.local.json

@@ -7,7 +7,6 @@ A reusable authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
 - OAuth authentication via WorkOS AuthKit (Google, GitHub, email, etc.)
 - Identity management with `sb_identities` table
 - Optional linking to your app's existing users table
-- LiveView settings page with nickname editing
 - Plugs and LiveView hooks for authentication
 
 ## Installation
@@ -99,7 +98,6 @@ config :sb_auth_ex,
 config :sb_auth_ex,
   login_path: "/auth/login",
   logout_path: "/auth/logout",
-  settings_path: "/settings",
   after_login_path: "/",
   after_logout_path: "/"
 
@@ -153,7 +151,7 @@ defmodule MyAppWeb.Router do
   scope "/" do
     pipe_through :browser
 
-    sb_auth_routes()  # Adds /auth/login, /auth/callback, /auth/logout, /settings
+    sb_auth_routes()  # Adds /auth/login, /auth/callback, /auth/logout
   end
 
   # Your app routes
@@ -183,29 +181,7 @@ defmodule MyAppWeb.Router do
 end
 ```
 
-### 6. Add User Menu to Layout
-
-In your layout component (e.g., `layouts.ex`):
-
-```elixir
-def app(assigns) do
-  ~H"""
-  <header>
-    <!-- Your header content -->
-    <SbAuthEx.Components.UserMenu.user_menu current_identity={@current_identity} />
-  </header>
-  <!-- ... -->
-  """
-end
-```
-
-Make sure your layout accepts `current_identity`:
-
-```elixir
-attr :current_identity, :map, default: nil
-```
-
-### 7. Environment Variables
+### 6. Environment Variables
 
 Set these environment variables:
 
@@ -382,6 +358,61 @@ config :sb_auth_ex,
   end
 ```
 
+### Implementing a Settings Page
+
+If you need a settings/profile page, implement it in your consuming app using the provided account functions:
+
+**In a LiveView:**
+
+```elixir
+defmodule MyAppWeb.SettingsLive do
+  use MyAppWeb, :live_view
+
+  def mount(_params, _session, socket) do
+    # current_identity is set by the :require_authenticated on_mount hook
+    identity = socket.assigns.current_identity
+    changeset = SbAuthEx.Identity.profile_changeset(identity, %{})
+
+    {:ok, assign(socket, form: to_form(changeset))}
+  end
+
+  def handle_event("save", %{"identity" => params}, socket) do
+    identity = socket.assigns.current_identity
+
+    case SbAuthEx.Accounts.update_identity(identity, params) do
+      {:ok, updated_identity} ->
+        {:noreply,
+         socket
+         |> assign(:current_identity, updated_identity)
+         |> put_flash(:info, "Profile updated!")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, form: to_form(changeset))}
+    end
+  end
+end
+```
+
+**In a Controller:**
+
+```elixir
+def update(conn, %{"identity" => params}) do
+  identity = conn.assigns.current_identity
+
+  case SbAuthEx.Accounts.update_identity(identity, params) do
+    {:ok, _identity} ->
+      conn
+      |> put_flash(:info, "Profile updated!")
+      |> redirect(to: ~p"/settings")
+
+    {:error, changeset} ->
+      render(conn, :edit, changeset: changeset)
+  end
+end
+```
+
+The `profile_changeset/2` validates the nickname field (max 50 characters).
+
 ### Available Functions
 
 ```elixir
@@ -412,12 +443,6 @@ sb_auth_routes()
 
 # Customize auth route prefix
 sb_auth_routes(scope: "/api/auth")
-
-# Disable settings page
-sb_auth_routes(settings: false)
-
-# Custom settings path
-sb_auth_routes(settings_path: "/account/settings")
 ```
 
 ## LiveView Hooks

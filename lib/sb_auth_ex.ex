@@ -6,8 +6,6 @@ defmodule SbAuthEx do
 
   - OAuth authentication flow with WorkOS AuthKit
   - Session-based authentication with plugs and LiveView hooks
-  - Settings page for profile management
-  - User menu component (avatar dropdown)
 
   ## Installation
 
@@ -41,10 +39,6 @@ defmodule SbAuthEx do
       end
 
       sb_auth_routes()
-
-  In your templates:
-
-      <SbAuthEx.Components.UserMenu.user_menu current_identity={@current_identity} />
   """
 
   @doc """
@@ -67,13 +61,6 @@ defmodule SbAuthEx do
   """
   def logout_path do
     Application.get_env(:sb_auth_ex, :logout_path, "/auth/logout")
-  end
-
-  @doc """
-  Returns the configured settings path.
-  """
-  def settings_path do
-    Application.get_env(:sb_auth_ex, :settings_path, "/settings")
   end
 
   @doc """

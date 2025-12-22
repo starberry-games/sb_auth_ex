@@ -45,7 +45,7 @@ defmodule SbAuthEx.MixProject do
   defp description do
     """
     Authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
-    Provides plugs, LiveView hooks, settings page, and user menu components.
+    Provides plugs and LiveView hooks.
     """
   end
 
