@@ -7,10 +7,17 @@ defmodule SbAuthEx.AuthController do
 
   alias SbAuthEx.Accounts
 
+  @return_to_cookie "_sb_auth_return_to"
+
   @doc """
   Initiates the AuthKit login flow by redirecting to WorkOS hosted UI.
+
+  Accepts an optional `return_to` query parameter. If present, stores it in a
+  signed cookie so the user can be redirected back after authentication.
   """
-  def login(conn, _params) do
+  def login(conn, params) do
+    conn = store_return_to_cookie(conn, params)
+
     config = Application.get_env(:sb_auth_ex, :workos, [])
     redirect_uri = config[:redirect_uri]
 
@@ -41,6 +48,7 @@ defmodule SbAuthEx.AuthController do
 
       {:error, reason} ->
         conn
+        |> clear_return_to_cookie()
         |> put_flash(:error, "Authentication failed: #{inspect(reason)}")
         |> redirect(to: SbAuthEx.after_logout_path())
     end
@@ -48,6 +56,7 @@ defmodule SbAuthEx.AuthController do
 
   def callback(conn, _params) do
     conn
+    |> clear_return_to_cookie()
     |> put_flash(:error, "Authentication failed: missing authorization code")
     |> redirect(to: SbAuthEx.after_logout_path())
   end
@@ -56,8 +65,13 @@ defmodule SbAuthEx.AuthController do
 
   @doc """
   Logs out the current user by clearing the session and redirecting to WorkOS logout.
+
+  Fires the `on_logout` callback (if configured) before clearing the session.
   """
   def logout(conn, _params) do
+    # Fire on_logout callback while identity is still available
+    maybe_call_on_logout(conn)
+
     session_id = get_session(conn, :workos_session_id)
 
     # Clear local session first
@@ -115,20 +129,27 @@ defmodule SbAuthEx.AuthController do
     # Extract session_id from JWT access token
     session_id = extract_session_id(access_token)
 
+    # Check if this is a new user BEFORE the upsert
+    is_new_user = is_nil(Accounts.get_identity_by_sb_id(user_id))
+
     case Accounts.upsert_identity_from_provider!(user_id, email) do
       {:ok, identity} ->
-        # Call optional callback
+        # For new users: fire on_register first, then on_login
+        if is_new_user, do: maybe_call_on_register(conn, identity)
         maybe_call_on_login(conn, identity)
+
+        {conn, redirect_to} = consume_return_to_cookie(conn)
 
         # Clear old session completely and set fresh values
         conn
         |> clear_session()
         |> put_session(:identity_id, identity.id)
         |> put_session(:workos_session_id, session_id)
-        |> redirect(to: SbAuthEx.after_login_path())
+        |> redirect(to: redirect_to)
 
       {:error, changeset} ->
         conn
+        |> clear_return_to_cookie()
         |> put_flash(:error, "Failed to create account: #{inspect(changeset.errors)}")
         |> redirect(to: SbAuthEx.after_logout_path())
     end
@@ -141,6 +162,65 @@ defmodule SbAuthEx.AuthController do
       fun when is_function(fun, 2) -> fun.(identity, conn)
     end
   end
+
+  defp maybe_call_on_register(conn, identity) do
+    case Application.get_env(:sb_auth_ex, :on_register) do
+      nil -> :ok
+      {module, function} -> apply(module, function, [identity, conn])
+      fun when is_function(fun, 2) -> fun.(identity, conn)
+    end
+  end
+
+  defp maybe_call_on_logout(conn) do
+    identity = conn.assigns[:current_identity]
+
+    if identity do
+      case Application.get_env(:sb_auth_ex, :on_logout) do
+        nil -> :ok
+        {module, function} -> apply(module, function, [identity, conn])
+        fun when is_function(fun, 2) -> fun.(identity, conn)
+      end
+    end
+  end
+
+  defp store_return_to_cookie(conn, %{"return_to" => return_to})
+       when is_binary(return_to) do
+    if valid_return_to?(return_to) do
+      put_resp_cookie(conn, @return_to_cookie, return_to,
+        sign: true,
+        max_age: 300,
+        http_only: true,
+        same_site: "Lax"
+      )
+    else
+      clear_return_to_cookie(conn)
+    end
+  end
+
+  defp store_return_to_cookie(conn, _params), do: clear_return_to_cookie(conn)
+
+  defp consume_return_to_cookie(conn) do
+    conn = fetch_cookies(conn, signed: [@return_to_cookie])
+    return_to = conn.cookies[@return_to_cookie]
+    conn = clear_return_to_cookie(conn)
+
+    redirect_to =
+      if valid_return_to?(return_to) do
+        return_to
+      else
+        SbAuthEx.after_login_path()
+      end
+
+    {conn, redirect_to}
+  end
+
+  defp clear_return_to_cookie(conn), do: delete_resp_cookie(conn, @return_to_cookie)
+
+  defp valid_return_to?(return_to) when is_binary(return_to) do
+    String.starts_with?(return_to, "/") and not String.starts_with?(return_to, "//")
+  end
+
+  defp valid_return_to?(_return_to), do: false
 
   defp extract_session_id(nil), do: nil
 

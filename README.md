@@ -8,6 +8,8 @@ A reusable authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
 - Identity management with `sb_identities` table
 - Optional linking to your app's existing users table
 - Plugs and LiveView hooks for authentication
+- Lifecycle callbacks: `on_login`, `on_register`, `on_logout`
+- `return_to` redirect support (return users to the page they were trying to visit)
 
 ## Installation
 
@@ -101,9 +103,11 @@ config :sb_auth_ex,
   after_login_path: "/",
   after_logout_path: "/"
 
-# Optional: callback after each successful login
+# Optional: lifecycle callbacks
 config :sb_auth_ex,
-  on_login: {MyApp.Users, :on_login}
+  on_login: {MyApp.Users, :on_login},
+  on_register: {MyApp.Users, :on_register},
+  on_logout: {MyApp.Users, :on_logout}
 ```
 
 **config/runtime.exs:**
@@ -318,38 +322,76 @@ user = Repo.get(User, identity.user_id)
 
 ### Callbacks
 
-#### on_login
-
-Called after every successful login. Useful for:
+All callbacks receive `(identity, conn)` and can be configured as either a `{Module, :function}` tuple or an anonymous function. Return values are ignored.
 
 ```elixir
 # config/config.exs
 config :sb_auth_ex,
-  on_login: {MyApp.Users, :on_login}
+  on_login: {MyApp.Users, :on_login},
+  on_register: {MyApp.Users, :on_register},
+  on_logout: {MyApp.Users, :on_logout}
 ```
+
+#### on_login
+
+Called after every successful login (both new and returning users).
+
+```elixir
+def on_login(identity, conn) do
+  MyApp.Analytics.track_login(identity)
+  :ok
+end
+```
+
+#### on_register
+
+Called only when a user authenticates for the **first time** (new identity created). When a new user registers, both `on_register` and `on_login` fire, in that order.
+
+```elixir
+def on_register(identity, conn) do
+  # Send welcome email, create a user profile, etc.
+  MyApp.Mailer.send_welcome_email(identity.email)
+  :ok
+end
+```
+
+#### on_logout
+
+Called during logout, **before** the session is cleared. Only fires if the user is actually logged in (identity is available). Useful for audit logging or cleanup.
+
+```elixir
+def on_logout(identity, conn) do
+  MyApp.Analytics.track_logout(identity)
+  :ok
+end
+```
+
+#### Callback example
 
 ```elixir
 # lib/my_app/users.ex
 defmodule MyApp.Users do
+  def on_register(identity, conn) do
+    # Create app-specific user record
+    {:ok, user} = MyApp.Repo.insert(%MyApp.User{email: identity.email})
+    SbAuthEx.Accounts.link_to_user(identity, user.id)
+    MyApp.Mailer.send_welcome_email(identity.email)
+    :ok
+  end
+
   def on_login(identity, conn) do
-    # Check if this is a new user (no linked user yet)
-    if is_nil(identity.user_id) do
-      # Send welcome email, create profile, etc.
-      MyApp.Mailer.send_welcome_email(identity.email)
-    end
-
-    # Access request info from conn if needed
-    user_agent = Plug.Conn.get_req_header(conn, "user-agent")
-
-    # Sync with external service
     MyApp.Analytics.track_login(identity)
+    :ok
+  end
 
+  def on_logout(identity, conn) do
+    MyApp.Analytics.track_logout(identity)
     :ok
   end
 end
 ```
 
-You can also use an anonymous function:
+You can also use anonymous functions:
 
 ```elixir
 config :sb_auth_ex,
@@ -357,6 +399,69 @@ config :sb_auth_ex,
     IO.puts("User logged in: #{identity.email}")
   end
 ```
+
+### Redirect After Login (`return_to`)
+
+By default, after login users are redirected to `after_login_path` (defaults to `"/"`). With `return_to` support, users are redirected back to the page they were trying to visit.
+
+#### How it works
+
+1. When an unauthenticated user tries to access a protected page, the `RequireAuth` plug automatically appends `?return_to=/original/path` to the login redirect.
+2. The login action stores the `return_to` value in a **signed cookie** (5-minute TTL). A signed cookie is used instead of the session because the session is cleared during the OAuth callback.
+3. After successful authentication, the callback reads the cookie and redirects to the stored path.
+
+#### Automatic with RequireAuth plug
+
+If you use the `RequireAuth` plug for controller routes, `return_to` works automatically:
+
+```elixir
+pipeline :require_auth do
+  plug SbAuthEx.Plugs.RequireAuth
+end
+
+scope "/admin", MyAppWeb do
+  pipe_through [:browser, :require_auth]
+  get "/dashboard", AdminController, :dashboard
+end
+```
+
+A user visiting `/admin/dashboard` while logged out will be redirected to `/auth/login?return_to=%2Fadmin%2Fdashboard`, and after login they'll land on `/admin/dashboard`.
+
+#### Manual usage
+
+You can pass `return_to` manually when linking to the login page:
+
+```heex
+<a href={"/auth/login?return_to=#{URI.encode_www_form(@current_path)}"}>Sign in</a>
+```
+
+#### LiveView routes
+
+The `require_authenticated` LiveView hook does not automatically set `return_to` because LiveView `on_mount` hooks don't have access to the request URI. For LiveView routes, you can handle this in your own hook:
+
+```elixir
+# In your app's custom on_mount hook
+def on_mount(:require_registered, _params, session, socket) do
+  # ... your identity check ...
+  if !identity do
+    current_uri = URI.encode_www_form(socket.assigns[:current_uri] || "/")
+
+    socket =
+      socket
+      |> put_flash(:error, "You must be logged in.")
+      |> redirect(to: "/auth/login?return_to=#{current_uri}")
+
+    {:halt, socket}
+  end
+end
+```
+
+#### Security
+
+- Only relative paths starting with `/` are accepted (prevents open redirect attacks)
+- Protocol-relative URLs (`//evil.com`) are rejected
+- The cookie is cryptographically signed (tamper-proof)
+- The cookie expires after 5 minutes
 
 ### Implementing a Settings Page
 
@@ -460,6 +565,8 @@ live_session :my_session,
 end
 ```
 
+> **Note on `return_to`:** The `:require_authenticated` hook does not automatically set `return_to` because LiveView `on_mount` hooks don't have access to the full request URI. For `return_to` support in LiveView routes, see the [Redirect After Login](#redirect-after-login-return_to) section.
+
 ## Plugs
 
 Plugs are for traditional controller routes (non-LiveView). For LiveView, use the `on_mount` hooks instead.
@@ -477,7 +584,7 @@ end
 
 ### RequireAuth
 
-Requires authentication for controller routes. Redirects to login if not authenticated.
+Requires authentication for controller routes. Redirects to login if not authenticated. Automatically passes the current request path as `return_to` so the user is redirected back after login.
 
 ```elixir
 # Define a pipeline

@@ -1,7 +1,7 @@
 defmodule SbAuthEx.MixProject do
   use Mix.Project
 
-  @version "0.4.5"
+  @version "0.5.0"
   @source_url "https://github.com/yourusername/sb_auth_ex"
 
   def project do
