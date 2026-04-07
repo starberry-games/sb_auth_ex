@@ -87,4 +87,70 @@ defmodule SbAuthEx do
   def after_logout_path do
     Application.get_env(:sb_auth_ex, :after_logout_path, "/")
   end
+
+  @doc """
+  Deletes a user's account: fires the `on_delete_account` callback,
+  deletes the WorkOS user (best-effort), and deletes the local identity.
+
+  The callback should return `:ok` to proceed or `{:error, reason}` to abort.
+  The operation is idempotent — if the identity was already removed, it returns
+  `{:ok, :deleted}`.
+
+  Returns `{:ok, :deleted}` on success or `{:error, reason}` on failure.
+
+  ## Example
+
+      case SbAuthEx.delete_account(identity, conn) do
+        {:ok, :deleted} -> # success
+        {:error, {:cleanup_failed, reason}} -> # callback aborted
+        {:error, reason} -> # identity deletion failed
+      end
+  """
+  def delete_account(%SbAuthEx.Identity{} = identity, conn) do
+    case fire_on_delete_account(identity, conn) do
+      {:error, reason} ->
+        {:error, {:cleanup_failed, reason}}
+
+      _ ->
+        delete_workos_user(identity.sb_id)
+
+        case SbAuthEx.Accounts.delete_identity(identity) do
+          {:ok, _deleted} -> {:ok, :deleted}
+          {:error, :already_deleted} -> {:ok, :deleted}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp fire_on_delete_account(identity, conn) do
+    case Application.get_env(:sb_auth_ex, :on_delete_account) do
+      nil -> :ok
+      {module, function} -> apply(module, function, [identity, conn])
+      fun when is_function(fun, 2) -> fun.(identity, conn)
+    end
+  end
+
+  defp delete_workos_user(workos_user_id) do
+    config = Application.get_env(:workos, WorkOS.Client)
+    api_key = config[:api_key]
+
+    url = "https://api.workos.com/user_management/users/#{workos_user_id}"
+
+    case Req.delete(url,
+           headers: [{"Authorization", "Bearer #{api_key}"}]
+         ) do
+      {:ok, %{status: status}} when status in [200, 204] ->
+        :ok
+
+      {:ok, %{status: status, body: body}} ->
+        require Logger
+        Logger.warning("Failed to delete WorkOS user #{workos_user_id}: HTTP #{status} #{inspect(body)}")
+        {:error, {:http_error, status, body}}
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("Failed to delete WorkOS user #{workos_user_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
 end

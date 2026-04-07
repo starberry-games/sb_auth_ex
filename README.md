@@ -625,7 +625,34 @@ DELETE /auth/account
 | App data (users, related records, etc.) | Your `on_delete_account` callback |
 | Local identity (`sb_identities` row) | SbAuthEx automatically |
 | WorkOS user | SbAuthEx automatically (best-effort) |
-| Session | SbAuthEx automatically |
+| Session | Your controller (after calling `SbAuthEx.delete_account/2`) |
+
+#### Using from a Custom Controller (e.g., API with Bearer token auth)
+
+The built-in `DELETE /auth/account` route uses session-based auth (browser pipeline). If your client uses a different auth mechanism (e.g., Bearer tokens), you can call `SbAuthEx.delete_account/2` directly from your own controller:
+
+```elixir
+# In your API controller
+def delete_account(conn, _params) do
+  identity = conn.assigns[:current_identity]
+
+  case SbAuthEx.delete_account(identity, conn) do
+    {:ok, :deleted} ->
+      json(conn, %{deleted: true})
+
+    {:error, {:cleanup_failed, reason}} ->
+      conn |> put_status(422) |> json(%{error: "Cleanup failed: #{inspect(reason)}"})
+
+    {:error, _reason} ->
+      conn |> put_status(500) |> json(%{error: "Failed to delete account"})
+  end
+end
+```
+
+`SbAuthEx.delete_account/2` handles the full flow (callback + WorkOS deletion + identity cleanup) and returns:
+- `{:ok, :deleted}` — success (also when identity was already gone)
+- `{:error, {:cleanup_failed, reason}}` — `on_delete_account` callback returned `{:error, reason}`
+- `{:error, reason}` — identity deletion failed
 
 ### Available Functions
 
@@ -648,8 +675,11 @@ SbAuthEx.Accounts.update_identity(identity, %{nickname: "New Name"})
 # Link identity to app user
 SbAuthEx.Accounts.link_to_user(identity, user_id)
 
-# Delete identity
+# Delete identity (low-level)
 SbAuthEx.Accounts.delete_identity(identity)
+
+# Delete account (full flow: callback + WorkOS + identity)
+SbAuthEx.delete_account(identity, conn)
 ```
 
 ## Router Options
