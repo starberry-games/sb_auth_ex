@@ -4,3 +4,4 @@ _build/
 *.beam
 .elixir_ls/
 settings.local.json
+.env*

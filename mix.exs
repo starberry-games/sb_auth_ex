@@ -2,7 +2,7 @@ defmodule SbAuthEx.MixProject do
   use Mix.Project
 
   @version "0.5.0"
-  @source_url "https://github.com/yourusername/sb_auth_ex"
+  @source_url "https://github.com/starberry-games/sb_auth_ex"
 
   def project do
     [
@@ -52,7 +52,7 @@ defmodule SbAuthEx.MixProject do
   defp package do
     [
       maintainers: ["Samir"],
-      licenses: ["All Rights Reserved"],
+      licenses: ["MIT"],
       links: %{"GitHub" => @source_url}
     ]
   end

@@ -17,9 +17,9 @@ A reusable authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
 
 Add `sb_auth_ex` to your dependencies in `mix.exs`. Choose one of these options:
 
-**Option A: Git dependency (recommended for private packages)**
+**Option A: Git dependency**
 
-Host `sb_auth_ex` in a private GitHub repository and reference it via SSH:
+Reference `sb_auth_ex` via SSH:
 
 ```elixir
 defp deps do
