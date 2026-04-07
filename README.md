@@ -8,7 +8,8 @@ A reusable authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
 - Identity management with `sb_identities` table
 - Optional linking to your app's existing users table
 - Plugs and LiveView hooks for authentication
-- Lifecycle callbacks: `on_login`, `on_register`, `on_logout`
+- Lifecycle callbacks: `on_login`, `on_register`, `on_logout`, `on_delete_account`
+- Account deletion with WorkOS user cleanup (`DELETE /auth/account`)
 - `return_to` redirect support (return users to the page they were trying to visit)
 
 ## Installation
@@ -107,7 +108,8 @@ config :sb_auth_ex,
 config :sb_auth_ex,
   on_login: {MyApp.Users, :on_login},
   on_register: {MyApp.Users, :on_register},
-  on_logout: {MyApp.Users, :on_logout}
+  on_logout: {MyApp.Users, :on_logout},
+  on_delete_account: {MyApp.Users, :on_delete_account}
 ```
 
 **config/runtime.exs:**
@@ -155,7 +157,7 @@ defmodule MyAppWeb.Router do
   scope "/" do
     pipe_through :browser
 
-    sb_auth_routes()  # Adds /auth/login, /auth/callback, /auth/logout
+    sb_auth_routes()  # Adds /auth/login, /auth/callback, /auth/logout, /auth/account
   end
 
   # Your app routes
@@ -366,6 +368,22 @@ def on_logout(identity, conn) do
 end
 ```
 
+#### on_delete_account
+
+Called when a user deletes their account, **before** the identity is removed from the database and WorkOS. Use this to clean up all associated app data.
+
+Return `:ok` to proceed with deletion, or `{:error, reason}` to abort (the endpoint will return a 422 with the reason). Any other return value proceeds with deletion.
+
+```elixir
+def on_delete_account(identity, conn) do
+  # Delete all app data associated with this user before the identity is removed
+  if identity.user_id do
+    MyApp.Repo.delete_all(from u in MyApp.User, where: u.id == ^identity.user_id)
+  end
+  :ok
+end
+```
+
 #### Callback example
 
 ```elixir
@@ -386,6 +404,14 @@ defmodule MyApp.Users do
 
   def on_logout(identity, conn) do
     MyApp.Analytics.track_logout(identity)
+    :ok
+  end
+
+  def on_delete_account(identity, conn) do
+    # Clean up all app data before identity is deleted
+    if identity.user_id do
+      MyApp.Repo.delete_all(from u in MyApp.User, where: u.id == ^identity.user_id)
+    end
     :ok
   end
 end
@@ -518,6 +544,89 @@ end
 
 The `profile_changeset/2` validates the nickname field (max 50 characters).
 
+### Account Deletion
+
+SbAuthEx provides a built-in `DELETE /auth/account` endpoint that handles the full account deletion flow:
+
+1. Fires the `on_delete_account` callback (so your app can clean up associated data). If the callback returns `{:error, reason}`, deletion is aborted and a 422 is returned.
+2. Deletes the user from WorkOS (best-effort — failures are logged but don't block local deletion)
+3. Deletes the local identity from `sb_identities`
+4. Clears the session
+5. Returns `{"deleted": true}` as JSON
+
+The endpoint is idempotent — if the identity was already removed, it still returns `{"deleted": true}`.
+
+#### Setup
+
+The route is included automatically via `sb_auth_routes()`. You need to:
+
+1. **Configure the callback** to clean up your app's data:
+
+```elixir
+# config/config.exs
+config :sb_auth_ex,
+  on_delete_account: {MyApp.Users, :on_delete_account}
+```
+
+2. **Implement the callback** to delete associated data:
+
+```elixir
+# lib/my_app/users.ex
+def on_delete_account(identity, conn) do
+  if identity.user_id do
+    # Delete all app data for this user
+    MyApp.Repo.delete_all(from u in MyApp.User, where: u.id == ^identity.user_id)
+  end
+
+  :ok
+end
+```
+
+3. **Ensure the route is behind authentication** in your router:
+
+```elixir
+# The delete endpoint requires current_identity in conn.assigns.
+# If called without authentication, it returns {"error": "Not authenticated"} with status 401.
+
+# Ensure your pipeline runs FetchCurrentIdentity:
+pipeline :authenticated do
+  plug :fetch_session
+  plug SbAuthEx.Plugs.FetchCurrentIdentity
+end
+
+scope "/auth" do
+  pipe_through :authenticated
+  # The delete "/account" route is already mounted by sb_auth_routes()
+end
+```
+
+#### API Response
+
+```
+DELETE /auth/account
+
+# Success (200) — also returned if identity was already deleted
+{"deleted": true}
+
+# Not authenticated (401)
+{"error": "Not authenticated"}
+
+# Callback aborted deletion (422)
+{"error": "Cleanup failed: <reason>"}
+
+# Server error (500)
+{"error": "Failed to delete account"}
+```
+
+#### What Gets Deleted
+
+| Data | Deleted by |
+|------|-----------|
+| App data (users, related records, etc.) | Your `on_delete_account` callback |
+| Local identity (`sb_identities` row) | SbAuthEx automatically |
+| WorkOS user | SbAuthEx automatically (best-effort) |
+| Session | SbAuthEx automatically |
+
 ### Available Functions
 
 ```elixir
@@ -538,6 +647,9 @@ SbAuthEx.Accounts.update_identity(identity, %{nickname: "New Name"})
 
 # Link identity to app user
 SbAuthEx.Accounts.link_to_user(identity, user_id)
+
+# Delete identity
+SbAuthEx.Accounts.delete_identity(identity)
 ```
 
 ## Router Options

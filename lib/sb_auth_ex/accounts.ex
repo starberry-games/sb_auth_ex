@@ -84,4 +84,18 @@ defmodule SbAuthEx.Accounts do
     |> repo().update()
   end
 
+  @doc """
+  Deletes an identity from the local database.
+
+  Returns `{:ok, identity}` on success, `{:error, changeset}` on failure,
+  or `{:error, :already_deleted}` if the row was already removed.
+  Callers should treat `:already_deleted` as idempotent success.
+  """
+  def delete_identity(%Identity{} = identity) do
+    repo().delete(identity)
+  rescue
+    Ecto.StaleEntryError ->
+      {:error, :already_deleted}
+  end
+
 end

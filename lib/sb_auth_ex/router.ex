@@ -25,6 +25,7 @@ defmodule SbAuthEx.Router do
   - GET /auth/login - Initiate login
   - GET /auth/callback - OAuth callback
   - DELETE /auth/logout - Logout
+  - DELETE /auth/account - Delete account
   """
   defmacro sb_auth_routes(opts \\ []) do
     scope_path = Keyword.get(opts, :scope, "/auth")
@@ -34,6 +35,7 @@ defmodule SbAuthEx.Router do
         get "/login", AuthController, :login
         get "/callback", AuthController, :callback
         delete "/logout", AuthController, :logout
+        delete "/account", AuthController, :delete_account
       end
     end
   end

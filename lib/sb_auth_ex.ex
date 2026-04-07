@@ -39,6 +39,17 @@ defmodule SbAuthEx do
       end
 
       sb_auth_routes()
+
+  ## Callbacks
+
+      config :sb_auth_ex,
+        on_login: {MyApp.AuthCallbacks, :on_login},
+        on_register: {MyApp.AuthCallbacks, :on_register},
+        on_logout: {MyApp.AuthCallbacks, :on_logout},
+        on_delete_account: {MyApp.AuthCallbacks, :on_delete_account}
+
+  The `on_delete_account` callback fires before the identity is deleted,
+  allowing the consuming app to clean up associated data.
   """
 
   @doc """

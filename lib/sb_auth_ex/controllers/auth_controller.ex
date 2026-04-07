@@ -2,7 +2,7 @@ defmodule SbAuthEx.AuthController do
   @moduledoc """
   Handles WorkOS AuthKit authentication flow.
   """
-  use Phoenix.Controller, formats: [:html]
+  use Phoenix.Controller, formats: [:html, :json]
   import Plug.Conn
 
   alias SbAuthEx.Accounts
@@ -97,6 +97,89 @@ defmodule SbAuthEx.AuthController do
       conn
       |> put_flash(:info, "You have been logged out.")
       |> redirect(to: SbAuthEx.after_logout_path())
+    end
+  end
+
+  @doc """
+  Deletes the current user's account.
+
+  Requires `current_identity` in conn assigns. Fires the `on_delete_account`
+  callback before deletion so the consuming app can clean up associated data.
+  The callback should return `:ok` to proceed with deletion, or
+  `{:error, reason}` to abort. Any other return value proceeds.
+  The endpoint is idempotent: returns `{"deleted": true}` even if
+  the identity was already removed.
+  Deletes the WorkOS user (best-effort), then deletes the local identity,
+  clears the session, and returns JSON `{"deleted": true}`.
+  """
+  def delete_account(conn, _params) do
+    identity = conn.assigns[:current_identity]
+
+    if identity do
+      case maybe_call_on_delete_account(conn, identity) do
+        {:error, reason} ->
+          conn
+          |> put_status(422)
+          |> json(%{error: "Cleanup failed: #{inspect(reason)}"})
+
+        _ ->
+          delete_workos_user(identity.sb_id)
+
+          case Accounts.delete_identity(identity) do
+            {:ok, _deleted} ->
+              conn
+              |> configure_session(drop: true)
+              |> put_status(200)
+              |> json(%{deleted: true})
+
+            {:error, :already_deleted} ->
+              conn
+              |> configure_session(drop: true)
+              |> put_status(200)
+              |> json(%{deleted: true})
+
+            {:error, _reason} ->
+              conn
+              |> put_status(500)
+              |> json(%{error: "Failed to delete account"})
+          end
+      end
+    else
+      conn
+      |> put_status(401)
+      |> json(%{error: "Not authenticated"})
+    end
+  end
+
+  defp delete_workos_user(workos_user_id) do
+    config = Application.get_env(:workos, WorkOS.Client)
+    api_key = config[:api_key]
+
+    url = "https://api.workos.com/user_management/users/#{workos_user_id}"
+
+    case Req.delete(url,
+           headers: [{"Authorization", "Bearer #{api_key}"}]
+         ) do
+      {:ok, %{status: status}} when status in [200, 204] ->
+        :ok
+
+      {:ok, %{status: status, body: body}} ->
+        require Logger
+        Logger.warning("Failed to delete WorkOS user #{workos_user_id}: HTTP #{status} #{inspect(body)}")
+        {:error, {:http_error, status, body}}
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("Failed to delete WorkOS user #{workos_user_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp maybe_call_on_delete_account(conn, identity) do
+    case Application.get_env(:sb_auth_ex, :on_delete_account) do
+      nil -> :ok
+      {module, function} -> apply(module, function, [identity, conn])
+      fun when is_function(fun, 2) -> fun.(identity, conn)
     end
   end
 
