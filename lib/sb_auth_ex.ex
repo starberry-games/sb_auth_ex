@@ -4,7 +4,7 @@ defmodule SbAuthEx do
 
   ## Features
 
-  - OAuth authentication flow with WorkOS AuthKit
+  - OAuth authentication flow with WorkOS AuthKit (PKCE + `state`, login-CSRF safe)
   - Session-based authentication with plugs and LiveView hooks
 
   ## Installation
@@ -21,12 +21,15 @@ defmodule SbAuthEx do
 
       config :sb_auth_ex,
         repo: MyApp.Repo,
-        provider: :workos,
+        endpoint: MyAppWeb.Endpoint,
         workos: [
-          client_id: System.get_env("WORKOS_CLIENT_ID"),
           api_key: System.get_env("WORKOS_API_KEY"),
+          client_id: System.get_env("WORKOS_CLIENT_ID"),
           redirect_uri: System.get_env("WORKOS_REDIRECT_URI")
         ]
+
+  See `SbAuthEx.WorkOSClient` for how the WorkOS client is built (including the
+  legacy `config :workos, WorkOS.Client` fallback).
 
   ## Usage
 
@@ -131,26 +134,22 @@ defmodule SbAuthEx do
   end
 
   defp delete_workos_user(workos_user_id) do
-    config = Application.get_env(:workos, WorkOS.Client)
-    api_key = config[:api_key]
-
-    url = "https://api.workos.com/user_management/users/#{workos_user_id}"
-
-    case Req.delete(url,
-           headers: [{"Authorization", "Bearer #{api_key}"}]
-         ) do
-      {:ok, %{status: status}} when status in [200, 204] ->
+    case WorkOS.UserManagement.delete_user(SbAuthEx.WorkOSClient.client(), workos_user_id) do
+      {:ok, _} ->
         :ok
 
-      {:ok, %{status: status, body: body}} ->
-        require Logger
-        Logger.warning("Failed to delete WorkOS user #{workos_user_id}: HTTP #{status} #{inspect(body)}")
-        {:error, {:http_error, status, body}}
+      {:error, %WorkOS.ApiError{kind: :not_found}} ->
+        # Already gone on the WorkOS side — nothing left to clean up.
+        :ok
 
-      {:error, reason} ->
+      {:error, error} ->
         require Logger
-        Logger.warning("Failed to delete WorkOS user #{workos_user_id}: #{inspect(reason)}")
-        {:error, reason}
+
+        Logger.warning(
+          "Failed to delete WorkOS user #{workos_user_id}: #{Exception.message(error)}"
+        )
+
+        {:error, error}
     end
   end
 end

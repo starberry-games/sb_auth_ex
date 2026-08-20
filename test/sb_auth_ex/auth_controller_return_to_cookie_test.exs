@@ -9,12 +9,13 @@ defmodule SbAuthEx.AuthControllerReturnToCookieTest do
     previous_workos_client = Application.get_env(:workos, WorkOS.Client)
     previous_workos = Application.get_env(:sb_auth_ex, :workos)
 
-    client_config =
-      (previous_workos_client || [])
-      |> Keyword.put(:client_id, "client_test_123")
+    Application.delete_env(:workos, WorkOS.Client)
 
-    Application.put_env(:workos, WorkOS.Client, client_config)
-    Application.put_env(:sb_auth_ex, :workos, redirect_uri: "http://localhost/auth/callback")
+    Application.put_env(:sb_auth_ex, :workos,
+      api_key: "sk_test_123",
+      client_id: "client_test_123",
+      redirect_uri: "http://localhost/auth/callback"
+    )
 
     on_exit(fn ->
       restore_env(:workos, WorkOS.Client, previous_workos_client)
@@ -27,6 +28,7 @@ defmodule SbAuthEx.AuthControllerReturnToCookieTest do
   test "login without return_to clears stale return_to cookie" do
     conn =
       Phoenix.ConnTest.build_conn(:get, "/auth/login")
+      |> put_secret_key_base()
       |> Plug.Test.put_req_cookie(@return_to_cookie, "stale-cookie")
       |> AuthController.login(%{})
 
@@ -39,6 +41,7 @@ defmodule SbAuthEx.AuthControllerReturnToCookieTest do
   test "login with invalid return_to clears stale return_to cookie" do
     conn =
       Phoenix.ConnTest.build_conn(:get, "/auth/login")
+      |> put_secret_key_base()
       |> Plug.Test.put_req_cookie(@return_to_cookie, "stale-cookie")
       |> AuthController.login(%{"return_to" => "https://evil.example/admin"})
 
@@ -51,6 +54,7 @@ defmodule SbAuthEx.AuthControllerReturnToCookieTest do
       Phoenix.ConnTest.build_conn(:get, "/auth/callback")
       |> Plug.Test.init_test_session(%{})
       |> Phoenix.Controller.fetch_flash([])
+      |> put_secret_key_base()
       |> Plug.Test.put_req_cookie(@return_to_cookie, "stale-cookie")
       |> AuthController.callback(%{})
 

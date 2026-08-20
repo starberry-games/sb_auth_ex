@@ -5,3 +5,6 @@ _build/
 .elixir_ls/
 settings.local.json
 .env*
+.claude/worktrees
+erl_crash.dump
+/doc/

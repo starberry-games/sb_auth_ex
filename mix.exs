@@ -1,14 +1,14 @@
 defmodule SbAuthEx.MixProject do
   use Mix.Project
 
-  @version "0.6.1"
+  @version "0.7.0"
   @source_url "https://github.com/starberry-games/sb_auth_ex"
 
   def project do
     [
       app: :sb_auth_ex,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -35,8 +35,7 @@ defmodule SbAuthEx.MixProject do
       {:phoenix_live_view, "~> 1.1"},
       {:ecto_sql, "~> 3.13"},
       {:jason, "~> 1.2"},
-      {:req, "~> 0.5"},
-      {:workos, "~> 1.1"},
+      {:workos, "~> 3.0"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:postgrex, ">= 0.0.0", only: :test}
     ]
@@ -60,6 +59,7 @@ defmodule SbAuthEx.MixProject do
   defp docs do
     [
       main: "readme",
+      extras: ["README.md", "CHANGELOG.md"],
       source_ref: "v#{@version}",
       source_url: @source_url
     ]

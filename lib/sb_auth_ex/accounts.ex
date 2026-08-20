@@ -97,5 +97,4 @@ defmodule SbAuthEx.Accounts do
     Ecto.StaleEntryError ->
       {:error, :already_deleted}
   end
-
 end

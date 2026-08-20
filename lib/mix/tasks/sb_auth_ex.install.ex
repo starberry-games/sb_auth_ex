@@ -54,12 +54,13 @@ defmodule Mix.Tasks.SbAuthEx.Install do
           repo: MyApp.Repo,
           endpoint: MyAppWeb.Endpoint
 
-    📝 Add this to your config/runtime.exs (inside the WORKOS_API_KEY block):
+    📝 Add this to your config/runtime.exs:
 
         config :sb_auth_ex,
           workos: [
-            client_id: workos_client_id,
-            redirect_uri: workos_redirect_uri
+            api_key: System.fetch_env!("WORKOS_API_KEY"),
+            client_id: System.fetch_env!("WORKOS_CLIENT_ID"),
+            redirect_uri: System.fetch_env!("WORKOS_REDIRECT_URI")
           ]
 
     📝 Update your router.ex:
