@@ -51,8 +51,9 @@ defmodule SbAuthEx do
         on_logout: {MyApp.AuthCallbacks, :on_logout},
         on_delete_account: {MyApp.AuthCallbacks, :on_delete_account}
 
-  The `on_delete_account` callback fires before the identity is deleted,
-  allowing the consuming app to clean up associated data.
+  The `on_delete_account` callback fires after WorkOS confirms the user is gone
+  and before the local identity is deleted. It must be idempotent so cleanup can
+  be retried safely when a later deletion step fails.
   """
 
   @doc """
@@ -92,12 +93,13 @@ defmodule SbAuthEx do
   end
 
   @doc """
-  Deletes a user's account: fires the `on_delete_account` callback,
-  deletes the WorkOS user, and deletes the local identity.
+  Deletes a user's account by deleting the WorkOS user, firing the
+  `on_delete_account` callback, and then deleting the local identity.
 
-  The callback should return `:ok` to proceed or `{:error, reason}` to abort.
-  The operation is idempotent — if the identity was already removed, it returns
-  `{:ok, :deleted}`.
+  WorkOS must confirm deletion before the callback can run. The callback should
+  be idempotent because it can run again when a later step fails. Return `:ok`
+  to proceed or `{:error, reason}` to retain the local identity and session for
+  retry.
 
   Returns `{:ok, :deleted}` on success or `{:error, reason}` on failure.
 
@@ -111,22 +113,22 @@ defmodule SbAuthEx do
       end
   """
   def delete_account(%SbAuthEx.Identity{} = identity, conn) do
-    case fire_on_delete_account(identity, conn) do
-      {:error, reason} ->
-        {:error, {:cleanup_failed, reason}}
+    case delete_workos_user(identity.sb_id) do
+      :ok ->
+        case fire_on_delete_account(identity, conn) do
+          {:error, reason} ->
+            {:error, {:cleanup_failed, reason}}
 
-      _ ->
-        case delete_workos_user(identity.sb_id) do
-          :ok ->
+          _ ->
             case SbAuthEx.Accounts.delete_identity(identity) do
               {:ok, _deleted} -> {:ok, :deleted}
               {:error, :already_deleted} -> {:ok, :deleted}
               {:error, reason} -> {:error, reason}
             end
-
-          {:error, reason} ->
-            {:error, {:workos_delete_failed, reason}}
         end
+
+      {:error, reason} ->
+        {:error, {:workos_delete_failed, reason}}
     end
   end
 
@@ -143,8 +145,17 @@ defmodule SbAuthEx do
       {:ok, _} ->
         :ok
 
-      {:error, %WorkOS.ApiError{kind: :not_found}} ->
-        # Already gone on the WorkOS side — nothing left to clean up.
+      {:error,
+       %WorkOS.ApiError{
+         status: 404,
+         kind: :not_found,
+         code: "entity_not_found",
+         request_id: request_id,
+         body: %{"entity_id" => ^workos_user_id}
+       }}
+      when is_binary(request_id) and request_id != "" ->
+        # A structured WorkOS response confirms this exact user is already gone.
+        # Generic 404s from a bad base URL or path must fail closed below.
         :ok
 
       {:error, error} ->
