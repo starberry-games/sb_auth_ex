@@ -2,10 +2,10 @@ defmodule SbAuthEx.FakeRepo do
   @moduledoc """
   Minimal in-memory stand-in for the host app's Ecto repo.
 
-  Only implements the calls `SbAuthEx.Accounts` makes on the login path
-  (`get_by/2` and `insert/2`), so controller tests can exercise the full
-  callback without a database. State lives in the test process (process
-  dictionary), so tests stay isolated.
+  Implements the calls `SbAuthEx.Accounts` makes on the authentication and
+  account-deletion paths, so controller tests can exercise them without a
+  database. State lives in the test process (process dictionary), so tests
+  stay isolated.
   """
 
   alias SbAuthEx.Identity
@@ -39,4 +39,17 @@ defmodule SbAuthEx.FakeRepo do
   end
 
   def insert(%Ecto.Changeset{} = changeset, _opts), do: {:error, changeset}
+
+  def delete(%Identity{} = identity) do
+    identities = Process.get(@key, %{})
+
+    if Map.has_key?(identities, identity.sb_id) do
+      Process.put(@key, Map.delete(identities, identity.sb_id))
+      {:ok, identity}
+    else
+      raise Ecto.StaleEntryError,
+        action: :delete,
+        changeset: Ecto.Changeset.change(identity)
+    end
+  end
 end

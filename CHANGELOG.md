@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.1 — 2026-08-26
+
+### Fixed
+
+- Account deletion now requires WorkOS confirmation before application cleanup
+  runs. Failures return `502` while retaining app data, the local identity, and
+  the session for retry. A `404` counts as confirmation only when the structured
+  WorkOS response identifies the exact requested user as already absent.
+- The deletion callback is explicitly idempotent and runs only after WorkOS
+  confirmation. The endpoint documentation no longer claims that repeated HTTP
+  deletion requests return the same success response after the session is gone.
+
 ## 0.7.0 — 2026-08-20
 
 ### Security

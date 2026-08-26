@@ -18,7 +18,7 @@ A reusable authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
 0.7 moves from the WorkOS Elixir SDK 1.x to 3.x and fixes a login-CSRF
 vulnerability (missing OAuth `state`). To upgrade a consuming app:
 
-1. Bump `sb_auth_ex` to `v0.7.0` (and `workos` to `~> 3.0` if you depend on it
+1. Bump `sb_auth_ex` to `v0.7.1` (and `workos` to `~> 3.0` if you depend on it
    directly). Requires Elixir **1.18+**.
 2. Move the WorkOS credentials into the `:sb_auth_ex` config (see
    [Configure the Package](#4-configure-the-package)). The old
@@ -54,7 +54,7 @@ end
 You can also pin to a specific tag or branch:
 
 ```elixir
-{:sb_auth_ex, git: "git@github.com:starberry-games/sb_auth_ex.git", tag: "v0.1.0"}
+{:sb_auth_ex, git: "git@github.com:starberry-games/sb_auth_ex.git", tag: "v0.7.1"}
 {:sb_auth_ex, git: "git@github.com:starberry-games/sb_auth_ex.git", branch: "main"}
 ```
 
@@ -411,13 +411,18 @@ end
 
 #### on_delete_account
 
-Called when a user deletes their account, **before** the identity is removed from the database and WorkOS. Use this to clean up all associated app data.
+Called after WorkOS confirms the user has been deleted (or returns a structured
+response identifying that exact user as already absent), but before the local
+identity is removed. Use this to clean up associated app data.
 
-Return `:ok` to proceed with deletion, or `{:error, reason}` to abort (the endpoint will return a 422 with the reason). Any other return value proceeds with deletion.
+The callback **must be idempotent**. It runs again when cleanup itself fails or
+when local identity deletion fails and the request is retried. Return `:ok` to
+proceed, or `{:error, reason}` to retain the local identity and session and
+return 422. Any other return value proceeds with deletion.
 
 ```elixir
 def on_delete_account(identity, conn) do
-  # Delete all app data associated with this user before the identity is removed
+  # Idempotently delete app data before the local identity is removed
   if identity.user_id do
     MyApp.Repo.delete_all(from u in MyApp.User, where: u.id == ^identity.user_id)
   end
@@ -449,7 +454,7 @@ defmodule MyApp.Users do
   end
 
   def on_delete_account(identity, conn) do
-    # Clean up all app data before identity is deleted
+    # Idempotently clean up app data before the local identity is deleted
     if identity.user_id do
       MyApp.Repo.delete_all(from u in MyApp.User, where: u.id == ^identity.user_id)
     end
@@ -589,13 +594,18 @@ The `profile_changeset/2` validates the nickname field (max 50 characters).
 
 SbAuthEx provides a built-in `DELETE /auth/account` endpoint that handles the full account deletion flow:
 
-1. Fires the `on_delete_account` callback (so your app can clean up associated data). If the callback returns `{:error, reason}`, deletion is aborted and a 422 is returned.
-2. Deletes the user from WorkOS (best-effort — failures are logged but don't block local deletion)
+1. Deletes the user from WorkOS. Failures abort with a 502 response before
+   application cleanup runs. A 404 is accepted only when the structured WorkOS
+   response identifies the exact requested user as already absent.
+2. Fires the idempotent `on_delete_account` callback so your app can clean up
+   associated data. If it returns `{:error, reason}`, the local identity and
+   session are retained and a 422 is returned.
 3. Deletes the local identity from `sb_identities`
 4. Clears the session
 5. Returns `{"deleted": true}` as JSON
 
-The endpoint is idempotent — if the identity was already removed, it still returns `{"deleted": true}`.
+After success the session is cleared, so repeating the built-in authenticated
+request normally returns 401 rather than another success response.
 
 #### Setup
 
@@ -615,7 +625,7 @@ config :sb_auth_ex,
 # lib/my_app/users.ex
 def on_delete_account(identity, conn) do
   if identity.user_id do
-    # Delete all app data for this user
+    # Idempotently delete all app data for this user
     MyApp.Repo.delete_all(from u in MyApp.User, where: u.id == ^identity.user_id)
   end
 
@@ -646,7 +656,7 @@ end
 ```
 DELETE /auth/account
 
-# Success (200) — also returned if identity was already deleted
+# Success (200)
 {"deleted": true}
 
 # Not authenticated (401)
@@ -654,6 +664,9 @@ DELETE /auth/account
 
 # Callback aborted deletion (422)
 {"error": "Cleanup failed: <reason>"}
+
+# WorkOS deletion failed (502) — cleanup does not run; identity/session retained
+{"error": "Failed to delete account"}
 
 # Server error (500)
 {"error": "Failed to delete account"}
@@ -665,7 +678,7 @@ DELETE /auth/account
 |------|-----------|
 | App data (users, related records, etc.) | Your `on_delete_account` callback |
 | Local identity (`sb_identities` row) | SbAuthEx automatically |
-| WorkOS user | SbAuthEx automatically (best-effort) |
+| WorkOS user | SbAuthEx automatically; only an exact structured missing-user response is accepted as already absent |
 | Session | Your controller (after calling `SbAuthEx.delete_account/2`) |
 
 #### Using from a Custom Controller (e.g., API with Bearer token auth)
@@ -684,15 +697,19 @@ def delete_account(conn, _params) do
     {:error, {:cleanup_failed, reason}} ->
       conn |> put_status(422) |> json(%{error: "Cleanup failed: #{inspect(reason)}"})
 
+    {:error, {:workos_delete_failed, _reason}} ->
+      conn |> put_status(502) |> json(%{error: "Failed to delete account"})
+
     {:error, _reason} ->
       conn |> put_status(500) |> json(%{error: "Failed to delete account"})
   end
 end
 ```
 
-`SbAuthEx.delete_account/2` handles the full flow (callback + WorkOS deletion + identity cleanup) and returns:
-- `{:ok, :deleted}` — success (also when identity was already gone)
+`SbAuthEx.delete_account/2` handles the full flow (WorkOS deletion + callback + identity cleanup) and returns:
+- `{:ok, :deleted}` — every deletion stage completed
 - `{:error, {:cleanup_failed, reason}}` — `on_delete_account` callback returned `{:error, reason}`
+- `{:error, {:workos_delete_failed, reason}}` — WorkOS deletion failed; the local identity is retained
 - `{:error, reason}` — identity deletion failed
 
 ### Available Functions
@@ -719,7 +736,7 @@ SbAuthEx.Accounts.link_to_user(identity, user_id)
 # Delete identity (low-level)
 SbAuthEx.Accounts.delete_identity(identity)
 
-# Delete account (full flow: callback + WorkOS + identity)
+# Delete account (full flow: WorkOS + callback + identity)
 SbAuthEx.delete_account(identity, conn)
 ```
 

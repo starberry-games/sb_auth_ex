@@ -119,9 +119,9 @@ defmodule SbAuthEx.AuthController do
   Deletes the current user's account.
 
   Requires `current_identity` in conn assigns. Delegates to `SbAuthEx.delete_account/2`
-  for the full deletion flow (callback, WorkOS, identity cleanup).
-  The endpoint is idempotent: returns `{"deleted": true}` even if
-  the identity was already removed.
+  for the full deletion flow (WorkOS, callback, identity cleanup).
+  If WorkOS deletion fails, it returns 502 without running application cleanup,
+  deleting the local identity, or dropping the session.
   """
   def delete_account(conn, _params) do
     identity = conn.assigns[:current_identity]
@@ -138,6 +138,11 @@ defmodule SbAuthEx.AuthController do
           conn
           |> put_status(422)
           |> json(%{error: "Cleanup failed: #{inspect(reason)}"})
+
+        {:error, {:workos_delete_failed, _reason}} ->
+          conn
+          |> put_status(502)
+          |> json(%{error: "Failed to delete account"})
 
         {:error, _reason} ->
           conn
