@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1 — 2026-08-26
+
+### Fixed
+
+- Account deletion now fails with `502` when WorkOS returns an error other than
+  `404`. The local identity and session are retained so the deletion can be
+  retried instead of reporting success while the WorkOS user still exists.
+
 ## 0.7.0 — 2026-08-20
 
 ### Security

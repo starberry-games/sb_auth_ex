@@ -11,7 +11,7 @@ defmodule SbAuthEx do
 
   Add to your dependencies:
 
-      {:sb_auth_ex, "~> 0.1.0"}
+      {:sb_auth_ex, "~> 0.7.1"}
 
   Run the install task:
 
@@ -93,7 +93,7 @@ defmodule SbAuthEx do
 
   @doc """
   Deletes a user's account: fires the `on_delete_account` callback,
-  deletes the WorkOS user (best-effort), and deletes the local identity.
+  deletes the WorkOS user, and deletes the local identity.
 
   The callback should return `:ok` to proceed or `{:error, reason}` to abort.
   The operation is idempotent — if the identity was already removed, it returns
@@ -106,6 +106,7 @@ defmodule SbAuthEx do
       case SbAuthEx.delete_account(identity, conn) do
         {:ok, :deleted} -> # success
         {:error, {:cleanup_failed, reason}} -> # callback aborted
+        {:error, {:workos_delete_failed, reason}} -> # WorkOS deletion failed
         {:error, reason} -> # identity deletion failed
       end
   """
@@ -115,12 +116,16 @@ defmodule SbAuthEx do
         {:error, {:cleanup_failed, reason}}
 
       _ ->
-        delete_workos_user(identity.sb_id)
+        case delete_workos_user(identity.sb_id) do
+          :ok ->
+            case SbAuthEx.Accounts.delete_identity(identity) do
+              {:ok, _deleted} -> {:ok, :deleted}
+              {:error, :already_deleted} -> {:ok, :deleted}
+              {:error, reason} -> {:error, reason}
+            end
 
-        case SbAuthEx.Accounts.delete_identity(identity) do
-          {:ok, _deleted} -> {:ok, :deleted}
-          {:error, :already_deleted} -> {:ok, :deleted}
-          {:error, reason} -> {:error, reason}
+          {:error, reason} ->
+            {:error, {:workos_delete_failed, reason}}
         end
     end
   end
