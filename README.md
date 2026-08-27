@@ -1,11 +1,14 @@
 # SbAuthEx
 
-A reusable authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
+A reusable authentication package for Elixir/Phoenix apps using WorkOS AuthKit
+(default) or any OIDC provider.
 
 ## Features
 
 - OAuth authentication via WorkOS AuthKit (Google, GitHub, email, etc.), with
   PKCE and a per-login `state` — see [Login CSRF protection](#login-csrf-protection)
+- Alternative generic OIDC provider for apps that authenticate against a shared
+  issuer — see [OIDC provider](#oidc-provider)
 - Identity management with `sb_identities` table
 - Optional linking to your app's existing users table
 - Plugs and LiveView hooks for authentication
@@ -218,6 +221,63 @@ The redirect URI must be registered in the WorkOS dashboard (Redirects). The
 logout flow additionally redirects the browser back to
 `endpoint.url() <> after_logout_path` — if your WorkOS project restricts logout
 redirect URIs, register that URL too.
+
+## OIDC provider
+
+Apps that authenticate against a shared OIDC issuer (for example a WorkOS
+Connect environment, or any issuer that mints JWT access tokens bound to a
+resource audience) select the OIDC provider instead of the WorkOS AuthKit
+config. Apps that set no `provider:` keep the WorkOS path bit-for-bit — the
+routes, plugs, hooks, callbacks, cookies and the `sb_identities` data layer
+are identical for both providers.
+
+```elixir
+# config/runtime.exs
+config :sb_auth_ex,
+  provider: :oidc,
+  oidc: [
+    issuer: System.fetch_env!("OIDC_ISSUER"),
+    client_id: System.fetch_env!("OIDC_CLIENT_ID"),
+    client_secret: System.get_env("OIDC_CLIENT_SECRET"),  # omit (or leave empty) for a public client
+    redirect_uri: System.fetch_env!("OIDC_REDIRECT_URI"),
+    audience: System.fetch_env!("OIDC_AUDIENCE")
+  ]
+```
+
+The provider runs an authorization code + PKCE flow with `state` and `nonce`,
+exchanges the code at the issuer's token endpoint (resolved via OIDC discovery,
+with explicit endpoint overrides available), and verifies the returned access
+token against the issuer JWKS: allowlisted asymmetric algorithms only, exact
+`iss`, exact `aud`, and `exp`. The identity is keyed on the verified `sub`
+claim — never on email — and `sub` is stored in `sb_id` exactly where a WorkOS
+`user_...` id goes today.
+
+Because the default scopes include `openid`, the token response must also carry
+an `id_token`; it is verified the same way (with `aud` = `client_id`) and its
+`nonce` must match the one minted at login. Configure `scopes` without `openid`
+for plain OAuth 2 issuers that mint JWT access tokens but no id_token.
+
+`audience` is your app's own resource indicator and is deliberately required:
+it is sent as the RFC 8707 `resource` parameter on both the authorization and
+token requests, and on a shared issuer it is the control that stops a valid
+token minted for a *different* tool from being replayed against this app.
+
+Two behavioral differences from the WorkOS provider, both because the upstream
+identity belongs to the identity provider rather than to this app: logout
+clears the local session only (no hosted-logout redirect), and account
+deletion skips the provider step (`on_delete_account` and local identity
+deletion still run).
+
+**Switching an existing app from WorkOS to OIDC:** account deletion always
+goes through the *currently configured* provider — identities store no
+provenance. After flipping `provider: :oidc`, deleting an identity created
+under WorkOS no longer deletes the WorkOS user upstream (the OIDC provider's
+deletion step is a no-op). Drain or migrate pending deletions before
+switching, or handle the WorkOS cleanup in `on_delete_account`.
+
+See `SbAuthEx.Providers.OIDC` for the full list of options (scopes, endpoint
+overrides, token auth method, algorithm allowlist, cache TTLs, extra authorize
+params).
 
 ## Login CSRF protection
 

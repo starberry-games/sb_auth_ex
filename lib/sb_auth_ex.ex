@@ -1,17 +1,19 @@
 defmodule SbAuthEx do
   @moduledoc """
-  SbAuthEx - Authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
+  SbAuthEx - Authentication package for Elixir/Phoenix apps, using WorkOS
+  AuthKit (default) or any OIDC provider.
 
   ## Features
 
-  - OAuth authentication flow with WorkOS AuthKit (PKCE + `state`, login-CSRF safe)
+  - OAuth authentication flow (PKCE + `state`, login-CSRF safe) against a
+    configurable `SbAuthEx.Provider`: WorkOS AuthKit or generic OIDC
   - Session-based authentication with plugs and LiveView hooks
 
   ## Installation
 
   Add to your dependencies:
 
-      {:sb_auth_ex, "~> 0.7.1"}
+      {:sb_auth_ex, "~> 0.8.0"}
 
   Run the install task:
 
@@ -30,6 +32,21 @@ defmodule SbAuthEx do
 
   See `SbAuthEx.WorkOSClient` for how the WorkOS client is built (including the
   legacy `config :workos, WorkOS.Client` fallback).
+
+  Internal tools authenticating against a shared OIDC issuer configure the
+  OIDC provider instead (see `SbAuthEx.Providers.OIDC` for all options):
+
+      config :sb_auth_ex,
+        provider: :oidc,
+        oidc: [
+          issuer: System.get_env("OIDC_ISSUER"),
+          client_id: System.get_env("OIDC_CLIENT_ID"),
+          client_secret: System.get_env("OIDC_CLIENT_SECRET"),
+          redirect_uri: System.get_env("OIDC_REDIRECT_URI"),
+          audience: System.get_env("OIDC_AUDIENCE")
+        ]
+
+  Apps that set no `provider:` keep the WorkOS AuthKit path unchanged.
 
   ## Usage
 
@@ -93,13 +110,15 @@ defmodule SbAuthEx do
   end
 
   @doc """
-  Deletes a user's account by deleting the WorkOS user, firing the
-  `on_delete_account` callback, and then deleting the local identity.
+  Deletes a user's account by deleting the user on the provider side, firing
+  the `on_delete_account` callback, and then deleting the local identity.
 
-  WorkOS must confirm deletion before the callback can run. The callback should
-  be idempotent because it can run again when a later step fails. Return `:ok`
-  to proceed or `{:error, reason}` to retain the local identity and session for
-  retry.
+  The provider must confirm deletion before the callback can run. The WorkOS
+  provider deletes the WorkOS user; the OIDC provider does not own the
+  upstream account (it lives at the IdP) and confirms immediately. The
+  callback should be idempotent because it can run again when a later step
+  fails. Return `:ok` to proceed or `{:error, reason}` to retain the local
+  identity and session for retry.
 
   Returns `{:ok, :deleted}` on success or `{:error, reason}` on failure.
 
@@ -108,12 +127,12 @@ defmodule SbAuthEx do
       case SbAuthEx.delete_account(identity, conn) do
         {:ok, :deleted} -> # success
         {:error, {:cleanup_failed, reason}} -> # callback aborted
-        {:error, {:workos_delete_failed, reason}} -> # WorkOS deletion failed
+        {:error, {:workos_delete_failed, reason}} -> # provider deletion failed
         {:error, reason} -> # identity deletion failed
       end
   """
   def delete_account(%SbAuthEx.Identity{} = identity, conn) do
-    case delete_workos_user(identity.sb_id) do
+    case SbAuthEx.Provider.current().delete_user(identity.sb_id) do
       :ok ->
         case fire_on_delete_account(identity, conn) do
           {:error, reason} ->
@@ -137,35 +156,6 @@ defmodule SbAuthEx do
       nil -> :ok
       {module, function} -> apply(module, function, [identity, conn])
       fun when is_function(fun, 2) -> fun.(identity, conn)
-    end
-  end
-
-  defp delete_workos_user(workos_user_id) do
-    case WorkOS.UserManagement.delete_user(SbAuthEx.WorkOSClient.client(), workos_user_id) do
-      {:ok, _} ->
-        :ok
-
-      {:error,
-       %WorkOS.ApiError{
-         status: 404,
-         kind: :not_found,
-         code: "entity_not_found",
-         request_id: request_id,
-         body: %{"entity_id" => ^workos_user_id}
-       }}
-      when is_binary(request_id) and request_id != "" ->
-        # A structured WorkOS response confirms this exact user is already gone.
-        # Generic 404s from a bad base URL or path must fail closed below.
-        :ok
-
-      {:error, error} ->
-        require Logger
-
-        Logger.warning(
-          "Failed to delete WorkOS user #{workos_user_id}: #{Exception.message(error)}"
-        )
-
-        {:error, error}
     end
   end
 end
