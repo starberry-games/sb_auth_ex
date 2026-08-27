@@ -1,9 +1,10 @@
 defmodule SbAuthEx.Identity do
   @moduledoc """
-  Schema representing an authenticated identity from WorkOS.
+  Schema representing an authenticated identity from the configured provider.
 
-  The `sb_id` field stores the WorkOS user_id and serves as the
-  global cross-application identifier for this identity.
+  The `sb_id` field stores the provider's stable subject — a WorkOS `user_...`
+  id or an OIDC `sub` — and serves as the global cross-application identifier
+  for this identity.
 
   The optional `user_id` field can be used to link this identity
   to an app-specific users table.

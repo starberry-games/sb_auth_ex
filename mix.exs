@@ -1,7 +1,7 @@
 defmodule SbAuthEx.MixProject do
   use Mix.Project
 
-  @version "0.7.1"
+  @version "0.8.0"
   @source_url "https://github.com/starberry-games/sb_auth_ex"
 
   def project do
@@ -36,6 +36,8 @@ defmodule SbAuthEx.MixProject do
       {:ecto_sql, "~> 3.13"},
       {:jason, "~> 1.2"},
       {:workos, "~> 3.0"},
+      {:req, "~> 0.5"},
+      {:jose, "~> 1.11"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:postgrex, ">= 0.0.0", only: :test}
     ]
@@ -43,8 +45,8 @@ defmodule SbAuthEx.MixProject do
 
   defp description do
     """
-    Authentication package for Elixir/Phoenix apps using WorkOS AuthKit.
-    Provides plugs and LiveView hooks.
+    Authentication package for Elixir/Phoenix apps using WorkOS AuthKit or a
+    generic OIDC provider. Provides plugs and LiveView hooks.
     """
   end
 
