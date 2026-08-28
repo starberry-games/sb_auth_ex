@@ -62,7 +62,7 @@ defmodule SbAuthEx.MixProject do
     [
       main: "readme",
       extras: ["README.md", "CHANGELOG.md"],
-      source_ref: "v#{@version}",
+      source_ref: @version,
       source_url: @source_url
     ]
   end
