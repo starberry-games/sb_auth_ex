@@ -200,7 +200,10 @@ defmodule SbAuthEx.Providers.OIDC.TokenVerifier do
   end
 
   defp check_time(claims, config) do
-    leeway = Keyword.get(config, :leeway_seconds, @default_leeway)
+    # Keyword.get/3 returns nil, not the default, for `[leeway_seconds: nil]` —
+    # the unset-System.get_env/1 shape — and `trunc(exp) + nil` would raise,
+    # 500ing a bearer plug that should have returned a clean 401.
+    leeway = Cache.seconds(config[:leeway_seconds], @default_leeway)
     now = System.system_time(:second)
     exp = claims["exp"]
     nbf = claims["nbf"]

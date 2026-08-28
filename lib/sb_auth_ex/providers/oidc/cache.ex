@@ -14,24 +14,37 @@ defmodule SbAuthEx.Providers.OIDC.Cache do
   #     callers serve the stale value, so pacing costs nothing here — this is
   #     what stops a failing issuer from turning inbound request rate into
   #     outbound request rate for the whole `max_stale` window
-  #   - a cold (or hard-stale) entry has nothing to serve, so its fetch is
-  #     *not* paced on the way in: denying it would fail requests at cold start
-  #     against a perfectly healthy issuer. It is paced on the way out instead
-  #     — a failure is remembered for one cooldown window and replayed with no
-  #     HTTP call
+  #   - a cold (or hard-stale) entry has nothing to serve, so exactly one caller
+  #     per window fetches and the rest wait briefly for its result, rather than
+  #     being refused: this path also serves bearer-token plugs, where refusing
+  #     would 401 valid tokens for a whole fetch after every restart. A failure
+  #     is remembered for one cooldown window and replayed with no HTTP call
   #
-  # One hole is left open deliberately. Between a cold fetch starting and the
-  # first failure landing (up to ~15s against a black-holed issuer, given
-  # HTTP's timeouts and single retry) concurrent callers all fetch, because
-  # there is no marker yet. Closing that needs a process to serialize on, and
-  # SbAuthEx deliberately has no supervision tree. So the pacing guarantee is
-  # honest only once an entry (or a failure) has landed: warm, at most ~one
-  # outbound request per cooldown window per key; cold, bounded by instantaneous
-  # concurrency rather than by request rate.
+  # The cold claim is taken *before* the fetch, and that ordering is the whole
+  # point. The failure marker can only be written once the fetch returns, which
+  # against a hanging issuer is ~11s later (5s receive timeout, a retry — Req
+  # treats `:timeout` as transient — and ~1s of backoff between them). Pacing
+  # on the marker alone leaves that entire window open, so outbound concurrency
+  # becomes inbound request rate times 11s: at 10 req/s that is 110 connections
+  # against a pool of 50, which is the exhaustion this module exists to
+  # prevent. It also recurs, since the marker expires 10s after it lands.
+  #
+  # What is left open, and is genuinely bounded by instantaneous concurrency
+  # rather than request rate: the gap between reading a gate and writing it, so
+  # callers that read an open gate in that window all proceed. Closing that
+  # needs a process to serialize on, and SbAuthEx deliberately has no
+  # supervision tree.
 
   require Logger
 
   @root SbAuthEx.Providers.OIDC
+
+  # How long a cold caller that lost the race waits for the winner's result
+  # before giving up, and how often it looks. persistent_term reads are free and
+  # a sleeping process costs a few KB — both are far cheaper than the pool
+  # connection a second concurrent fetch would hold for a full receive timeout.
+  @cold_wait_ms 2_000
+  @cold_poll_ms 50
 
   # `opts` are `:ttl`, `:max_stale` and `:cooldown`, all in seconds.
   #
@@ -44,6 +57,7 @@ defmodule SbAuthEx.Providers.OIDC.Cache do
     ttl = Keyword.fetch!(opts, :ttl)
     max_stale = Keyword.fetch!(opts, :max_stale)
     cooldown = Keyword.fetch!(opts, :cooldown)
+    wait_ms = Keyword.get(opts, :wait_ms, @cold_wait_ms)
     now = System.system_time(:second)
 
     case :persistent_term.get({@root, kind, key}, nil) do
@@ -53,8 +67,10 @@ defmodule SbAuthEx.Providers.OIDC.Cache do
       {fetched_at, value} when now - fetched_at < max_stale ->
         refresh_stale(kind, key, value, cooldown, fun)
 
-      _ ->
-        cold_fetch(kind, key, cooldown, fun)
+      other ->
+        # A hard-stale entry may not be served, so a waiting caller has to be
+        # able to tell the winner's result apart from it.
+        cold_fetch(kind, key, cooldown, wait_ms, previous_fetched_at(other), fun)
     end
   end
 
@@ -140,19 +156,57 @@ defmodule SbAuthEx.Providers.OIDC.Cache do
     end
   end
 
-  defp cold_fetch(kind, key, cooldown, fun) do
+  defp cold_fetch(kind, key, cooldown, wait_ms, previous_at, fun) do
     case recent_failure(kind, key, cooldown) do
       {:error, _reason} = replay ->
         replay
 
       nil ->
-        case refresh(kind, key, fun) do
-          {:ok, value} ->
-            {:ok, value}
+        # Its own gate, not the refresh/unknown-kid one: a successful cold fetch
+        # leaves a fresh entry, so nothing after it needs pacing, and spending
+        # the shared budget here would refuse a rotation refetch for a full
+        # window after every restart.
+        if claim({:cold, kind}, key, cooldown) do
+          case refresh(kind, key, fun) do
+            {:ok, value} ->
+              {:ok, value}
 
-          {:error, reason} = error ->
-            record_failure(kind, key, reason, cooldown)
-            error
+            {:error, reason} = error ->
+              record_failure(kind, key, reason, cooldown)
+              error
+          end
+        else
+          await_fetch(kind, key, cooldown, previous_at, deadline(wait_ms))
+        end
+    end
+  end
+
+  defp previous_fetched_at({fetched_at, _value}), do: fetched_at
+  defp previous_fetched_at(_absent), do: nil
+
+  defp deadline(wait_ms), do: System.monotonic_time(:millisecond) + wait_ms
+
+  # Waiting rather than failing: on a healthy cold start the winner returns in
+  # well under a poll interval or two, so every caller is served. Against a
+  # failing issuer the winner's marker lands here instead, and only a winner
+  # that never returns at all costs the full wait.
+  defp await_fetch(kind, key, cooldown, previous_at, deadline) do
+    case :persistent_term.get({@root, kind, key}, nil) do
+      {fetched_at, value} when previous_at == nil or fetched_at > previous_at ->
+        {:ok, value}
+
+      _absent_or_still_the_stale_entry ->
+        case recent_failure(kind, key, cooldown) do
+          {:error, _reason} = replay ->
+            replay
+
+          nil ->
+            if System.monotonic_time(:millisecond) < deadline do
+              Process.sleep(@cold_poll_ms)
+              await_fetch(kind, key, cooldown, previous_at, deadline)
+            else
+              {:error, {:fetch_unavailable, kind}}
+            end
         end
     end
   end

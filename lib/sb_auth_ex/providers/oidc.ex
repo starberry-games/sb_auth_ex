@@ -164,7 +164,8 @@ defmodule SbAuthEx.Providers.OIDC do
   def delete_user(_sb_id), do: :ok
 
   @doc """
-  Clears cached discovery metadata, JWKS and the unknown-`kid` refetch gate.
+  Clears cached discovery metadata and JWKS, plus the fetch-pacing state
+  (refetch gates, in-flight claims and failure markers).
 
   Useful in tests and after config changes; production code never needs it —
   caches expire on their own and JWKS refetches on unknown `kid`.

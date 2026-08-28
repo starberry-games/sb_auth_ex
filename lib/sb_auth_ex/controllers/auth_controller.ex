@@ -226,6 +226,13 @@ defmodule SbAuthEx.AuthController do
     "Authentication failed: the identity provider returned an invalid token"
   end
 
+  # Not an invalid token: the JWKS refetch gate declined to go out again. The
+  # window is seconds, so this is a retry — and it must not fall through to the
+  # catch-all below, which would log a warning per occurrence for something
+  # unauthenticated traffic can trigger.
+  defp failure_message(:signing_key_unavailable),
+    do: "Authentication failed: could not verify the token signing key. Please try again."
+
   defp failure_message(:missing_email),
     do: "Authentication failed: the identity provider did not supply an email address"
 

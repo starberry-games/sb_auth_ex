@@ -30,6 +30,7 @@ defmodule SbAuthEx.Providers.OIDC.TokenVerifierTest do
   # drifts out from under `Cache.reset/0`.
   @cache_key {OIDC, :jwks, @jwks_uri}
   @gate_key {OIDC, {:gate, :jwks}, @jwks_uri}
+  @cold_gate_key {OIDC, {:gate, {:cold, :jwks}}, @jwks_uri}
   @failure_key {OIDC, {:failure, :jwks}, @jwks_uri}
 
   setup_all do
@@ -196,7 +197,10 @@ defmodule SbAuthEx.Providers.OIDC.TokenVerifierTest do
       assert {^recorded_at, _reason} = :persistent_term.get(@failure_key)
       assert fetched(fetches) == 1
 
+      # Both windows opened on the same request, so the clock retires them
+      # together: the marker stops the replay, the cold gate stops the refetch.
       :persistent_term.put(@failure_key, {System.monotonic_time(:second) - 60, :stale})
+      :persistent_term.put(@cold_gate_key, System.monotonic_time(:second) - 60)
 
       assert {:error, _reason} = verify(token)
       assert fetched(fetches) == 2
@@ -262,6 +266,14 @@ defmodule SbAuthEx.Providers.OIDC.TokenVerifierTest do
       assert :persistent_term.get(@failure_key, :absent) == :absent
     end
 
+    test "a nil leeway falls back to the default instead of raising", %{jwk: jwk} do
+      # `Keyword.get/3` hands back the nil, not the default, and `trunc(exp) +
+      # nil` would 500 a bearer plug that should have returned a clean 401.
+      stub_jwks(fn _n -> jwks_for(jwk, @kid) end)
+
+      assert {:ok, %{"sub" => @sub}} = verify(sign(jwk, claims()), leeway_seconds: nil)
+    end
+
     test "reset_cache clears the gate and the failure marker too", %{jwk: jwk} do
       # Both use monotonic time, which does not reset between tests: a key
       # shape that drifted out of Cache.reset/0's match would silently poison
@@ -281,6 +293,7 @@ defmodule SbAuthEx.Providers.OIDC.TokenVerifierTest do
 
       assert :persistent_term.get(@cache_key, :absent) == :absent
       assert :persistent_term.get(@gate_key, :absent) == :absent
+      assert :persistent_term.get(@cold_gate_key, :absent) == :absent
       assert :persistent_term.get(@failure_key, :absent) == :absent
     end
   end
