@@ -17,6 +17,9 @@ defmodule SbAuthEx.Providers.OIDC.Metadata do
 
   @default_discovery_ttl 3600
   @discovery_max_stale 86_400
+  # `/auth/login` is unauthenticated and resolves discovery, so the same fetch
+  # pacing the JWKS gets applies here. Not configurable, like `max_stale`.
+  @discovery_refetch_cooldown 10
 
   @doc """
   Returns `{:ok, %{authorization_endpoint:, token_endpoint:, jwks_uri:, userinfo_endpoint:}}`.
@@ -57,9 +60,14 @@ defmodule SbAuthEx.Providers.OIDC.Metadata do
 
   defp discover(config) do
     issuer = Keyword.fetch!(config, :issuer)
-    ttl = Keyword.get(config, :discovery_cache_ttl, @default_discovery_ttl)
 
-    Cache.fetch(:discovery, issuer, ttl, @discovery_max_stale, fn ->
+    opts = [
+      ttl: Cache.seconds(config[:discovery_cache_ttl], @default_discovery_ttl),
+      max_stale: @discovery_max_stale,
+      cooldown: @discovery_refetch_cooldown
+    ]
+
+    Cache.fetch(:discovery, issuer, opts, fn ->
       url = String.trim_trailing(issuer, "/") <> "/.well-known/openid-configuration"
 
       case HTTP.get_json(url, config) do

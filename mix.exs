@@ -1,7 +1,7 @@
 defmodule SbAuthEx.MixProject do
   use Mix.Project
 
-  @version "0.8.0"
+  @version "0.8.1"
   @source_url "https://github.com/starberry-games/sb_auth_ex"
 
   def project do
@@ -62,7 +62,7 @@ defmodule SbAuthEx.MixProject do
     [
       main: "readme",
       extras: ["README.md", "CHANGELOG.md"],
-      source_ref: "v#{@version}",
+      source_ref: @version,
       source_url: @source_url
     ]
   end

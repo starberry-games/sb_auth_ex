@@ -164,6 +164,25 @@ defmodule SbAuthEx.AuthControllerOIDCFlowTest do
       assert Phoenix.Flash.get(conn.assigns.flash, :error) =~
                "could not reach the identity provider"
     end
+
+    @tag capture_log: true
+    test "a failing discovery is not refetched on every login" do
+      put_oidc_config(:req_options, plug: {Req.Test, SbAuthEx.OIDCStub}, retry: false)
+      test_pid = self()
+
+      Req.Test.stub(SbAuthEx.OIDCStub, fn conn ->
+        send(test_pid, {:oidc_request, :discovery})
+        Req.Test.json(Plug.Conn.put_status(conn, 503), %{"error" => "unavailable"})
+      end)
+
+      for _ <- 1..5, do: login()
+
+      # `/auth/login` is unauthenticated, so without pacing every hit is another
+      # outbound request against an issuer that is already failing — on the
+      # connection pool the token exchange needs.
+      assert_received {:oidc_request, :discovery}
+      refute_received {:oidc_request, :discovery}
+    end
   end
 
   describe "callback/2 — happy path" do

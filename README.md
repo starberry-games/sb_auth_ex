@@ -275,6 +275,32 @@ under WorkOS no longer deletes the WorkOS user upstream (the OIDC provider's
 deletion step is a no-op). Drain or migrate pending deletions before
 switching, or handle the WorkOS cleanup in `on_delete_account`.
 
+**Verifying tokens outside the login flow:** apps that also accept the
+issuer's access tokens on an API (a bearer-token plug, say) reach the same
+verification path from unauthenticated requests, so outbound JWKS traffic is
+paced. Once a key set has been fetched, everything that would go out again —
+the refetch an unknown `kid` triggers, and the refresh of a stale key set —
+shares one budget of roughly one request per `jwks_refetch_cooldown` seconds
+(default 10) per `jwks_uri`. That is what stops made-up `kid`s, or a failing
+issuer, from turning request rate into outbound request rate and exhausting
+the HTTP connection pool login's token exchange shares. A cold cache is
+bounded by how many requests arrive concurrently rather than by the cooldown
+(there is no value to serve yet, so the first fetch cannot be refused); once
+it fails once, that failure is replayed for the rest of the window without
+another call.
+
+Two things follow. During a real key rotation, a token signed by the new key
+can be refused for up to the cooldown before the refetch is allowed — it
+returns `{:error, :signing_key_unavailable}`, distinct from
+`{:error, :unknown_signing_key}`, which means the JWKS really was refetched
+and does not carry that key. And after an issuer outage ends, the cached
+failure can still be replayed for up to the cooldown before requests recover.
+
+Build the config for such a plug from the same source as the login flow (same
+`jwks_uri`, same `oidc` keyword list) — the pacing budget is keyed on
+`jwks_uri`, so a differently-spelled endpoint gets its own budget and its own
+outbound traffic.
+
 See `SbAuthEx.Providers.OIDC` for the full list of options (scopes, endpoint
 overrides, token auth method, algorithm allowlist, cache TTLs, extra authorize
 params).

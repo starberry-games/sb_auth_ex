@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.8.1 — 2026-08-28
+
+### Fixed
+
+- **Unauthenticated traffic can no longer turn request rate into outbound JWKS
+  or discovery request rate.** Token verification is reachable from
+  unauthenticated bearer-token plugs, not only from the login callback, and
+  `/auth/login` resolves discovery before anything is authenticated. Every
+  outbound request those paths can cause is now paced per key:
+
+    * an unknown `kid` refetches the JWKS at most once per
+      `:jwks_refetch_cooldown` seconds (default 10) per `jwks_uri`. Previously
+      every junk JWT carrying a made-up `kid` bought a fetch (two, with the
+      single retry).
+    * a **stale** cache entry refreshes at most once per that same window,
+      sharing one budget with the refetch above. Previously a stale entry
+      re-attempted the fetch on *every* request for the whole `max_stale`
+      window, so a failing issuer made this a 1:1 amplifier with no junk `kid`
+      needed. Denied callers serve the stale value, so this costs nothing.
+    * a **cold** entry has nothing to serve, so exactly one caller per window
+      fetches and the rest wait briefly (up to 2s) for its result rather than
+      being refused — this path also serves bearer-token plugs, where refusing
+      would 401 valid tokens for a whole fetch after every restart. A failure
+      is remembered for one window and replayed with no HTTP call.
+
+  The cold claim is taken *before* the fetch, and that ordering carries the
+  guarantee. A failure marker can only be written once the fetch returns, which
+  against a hanging issuer is ~11 seconds later (5s receive timeout, a retry —
+  Req treats `:timeout` as transient — and ~1s of backoff between them). Pacing
+  on the marker alone would leave that whole window open, making outbound
+  concurrency inbound request rate times 11s: at 10 req/s, 110 connections
+  against a pool of 50.
+
+  Discovery is paced by the same three mechanisms, on a fixed 10-second window
+  (not configurable, like its `max_stale`).
+
+  The exposure was never bandwidth: Req shares one Finch instance whose pools
+  are per host and default to 50 connections, and discovery, token exchange and
+  JWKS all live on the issuer's host — so a few junk requests per second could
+  saturate that pool and time out *login's* token exchange on checkout.
+
+  Scope, stated honestly: this is *roughly* one outbound request per window per
+  key, because a gate's check and its write are not atomic — a burst landing
+  inside that gap all proceed. That residual is bounded by instantaneous
+  concurrency, not by request rate. Closing it fully needs a process to
+  serialize on, and SbAuthEx deliberately has no supervision tree.
+
+  The pacing state lives under its own `:persistent_term` keys and never
+  touches a cache entry's timestamp, so this traffic cannot extend the
+  `jwks_max_stale` window a revoked signing key falls out of.
+
+### Changed
+
+- **`verify/4` error surface.** A refusal to look up a key is now
+  `{:error, :signing_key_unavailable}`, distinct from
+  `{:error, :unknown_signing_key}`, which continues to mean a refetch happened
+  and the issuer does not have that `kid`. A caller that waited on another
+  request's cold fetch and saw no result gets
+  `{:error, {:fetch_unavailable, :jwks}}`. Consumers matching on
+  `:unknown_signing_key` to build a 401 should match all three. Relatedly, a JWKS or
+  discovery failure replayed from the negative cache returns the *original*
+  error term (`{:jwks_fetch_failed, reason}` / `{:discovery_failed, reason}`),
+  so the term may describe a call made up to a cooldown window earlier.
+- **Availability trade-offs, both bounded by the cooldown.** During a genuine
+  key rotation a token signed by a brand-new `kid` is refused until the gate
+  opens or the TTL refresh lands. After an issuer outage ends, the cached
+  failure can still be replayed briefly before requests recover.
+- A `nil` `:leeway_seconds` no longer raises `ArithmeticError` mid-verification
+  (`Keyword.get/3` returns the `nil`, not the default, when the key is present),
+  which turned a 401 into a 500 in a bearer-token plug. It falls back to the
+  default like the other durations.
+- A gate refusal during login reports "could not verify the token signing key,
+  please try again" instead of falling through to the generic transport
+  message, which also logged a warning per occurrence for something
+  unauthenticated traffic can trigger.
+- Cache and gate durations are validated at config time: a non-integer
+  `:discovery_cache_ttl`, `:jwks_cache_ttl`, `:jwks_max_stale`,
+  `:jwks_refetch_cooldown` or `:leeway_seconds` now raises with a clear
+  message. Erlang term ordering sorts atoms and binaries above every integer,
+  so a `nil` from an unset `System.get_env/1` — or the binary from a set one —
+  would previously not crash: it would silently make an entry immortal or wedge
+  the refetch gate shut for the life of the node.
+- `ex_doc`'s `source_ref` no longer prefixes the version with `v`; this repo's
+  tags are unprefixed, so every source link in the generated docs pointed at a
+  ref that does not exist.
+
 ## 0.8.0 — 2026-08-27
 
 ### Added

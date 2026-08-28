@@ -51,6 +51,18 @@ defmodule SbAuthEx.Providers.OIDC do
     * `:jwks_max_stale` — how long an expired JWKS may keep serving when
       refreshing it fails, default 1800 seconds (stale discovery metadata is
       bounded at 24h)
+    * `:jwks_refetch_cooldown` — seconds between outbound JWKS requests once a
+      fresh cache entry cannot answer, default 10. It paces the refetch an
+      unknown `kid` triggers and the cache's own refresh of a stale key set —
+      which share one budget per `jwks_uri` — and it is also how long a failed
+      fetch is replayed for before another is attempted. Token verification is reachable
+      from unauthenticated traffic (a bearer-token plug verifying an inbound
+      access token), so this is what stops made-up `kid`s — or a failing
+      issuer — from turning request rate into outbound request rate and
+      exhausting the HTTP connection pool that login's token exchange shares.
+      The trade-off is that a genuinely rotated key may be refused for up to
+      that long. `0` disables all JWKS fetch pacing; do not, if anything
+      unauthenticated verifies tokens.
     * `:req_options` — passed verbatim to `Req` (tests inject a `Req.Test` plug)
 
   ## What a login verifies
@@ -152,7 +164,8 @@ defmodule SbAuthEx.Providers.OIDC do
   def delete_user(_sb_id), do: :ok
 
   @doc """
-  Clears cached discovery metadata and JWKS.
+  Clears cached discovery metadata and JWKS, plus the fetch-pacing state
+  (refetch gates, in-flight claims and failure markers).
 
   Useful in tests and after config changes; production code never needs it —
   caches expire on their own and JWKS refetches on unknown `kid`.
@@ -335,6 +348,7 @@ defmodule SbAuthEx.Providers.OIDC do
     validate_token_auth_method!(config)
     validate_scopes!(config)
     validate_allowed_algs!(config)
+    validate_seconds!(config)
 
     config
   end
@@ -404,6 +418,36 @@ defmodule SbAuthEx.Providers.OIDC do
         raise ArgumentError,
               "SbAuthEx: OIDC allowed_algs must be a non-empty list of strings — got #{inspect(other)}"
     end
+  end
+
+  # Erlang term ordering sorts atoms and binaries above every integer, so a
+  # `nil` from an unset `System.get_env/1` — or the binary from a set one —
+  # would not crash: it would silently make a cache entry immortal or wedge the
+  # refetch gate shut for the life of the node. Fail loudly at config time
+  # instead.
+  defp validate_seconds!(config) do
+    for key <- [
+          :discovery_cache_ttl,
+          :jwks_cache_ttl,
+          :jwks_max_stale,
+          :jwks_refetch_cooldown,
+          :leeway_seconds
+        ] do
+      case config[key] do
+        nil ->
+          :ok
+
+        seconds when is_integer(seconds) and seconds >= 0 ->
+          :ok
+
+        other ->
+          raise ArgumentError,
+                "SbAuthEx: OIDC #{key} must be a non-negative integer number of seconds — " <>
+                  "got #{inspect(other)}"
+      end
+    end
+
+    :ok
   end
 
   defp required!(config, key) do
