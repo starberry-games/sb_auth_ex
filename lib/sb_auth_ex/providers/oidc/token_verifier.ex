@@ -11,9 +11,24 @@ defmodule SbAuthEx.Providers.OIDC.TokenVerifier do
   #   - `aud` must contain the expected audience exactly
   #   - `exp` is required and enforced; `nbf` is enforced when present
   #
-  # JWKS is cached with a TTL; an unknown `kid` triggers one refetch to pick up
-  # key rotation. That refetch is only reachable after a successful token
-  # exchange, so it cannot be driven by unauthenticated traffic.
+  # JWKS is cached with a TTL; an unknown `kid` triggers a refetch to pick up
+  # key rotation, gated to at most one refetch per `:jwks_unknown_kid_cooldown`
+  # seconds (default 10) per jwks_uri.
+  #
+  # The gate is not an optimisation. `verify/4` is called directly from
+  # unauthenticated bearer-token plugs, not only from the login callback, so
+  # without it anyone can drive one outbound JWKS fetch per junk JWT (two, with
+  # HTTP's `max_retries: 1`) just by making up a `kid`. The damage is not
+  # bandwidth: Req shares a single Finch instance, its pools are per host and
+  # default to 50 connections, and discovery, token exchange and JWKS are all
+  # the same host — so a few junk requests a second saturate that pool and the
+  # *login* token exchange starts timing out on checkout. Inside the cooldown
+  # an unknown kid returns {:error, :unknown_signing_key} with no HTTP call at
+  # all.
+  #
+  # The cost of the gate is bounded and deliberate: during a genuine key
+  # rotation, a token signed by a kid we have never seen is refused until the
+  # gate opens or the TTL refresh lands.
 
   alias SbAuthEx.Providers.OIDC.Cache
   alias SbAuthEx.Providers.OIDC.HTTP
@@ -24,6 +39,9 @@ defmodule SbAuthEx.Providers.OIDC.TokenVerifier do
   # A revoked signing key must stop verifying promptly, so stale JWKS serves
   # for far less time than stale discovery metadata.
   @default_jwks_max_stale 1800
+  # Short on purpose: this is the window a genuinely rotated key can be
+  # refused for, traded against how cheap unknown-kid traffic is to serve.
+  @default_unknown_kid_cooldown 10
 
   def verify(token, config, jwks_uri, expected_aud) when is_binary(token) do
     with {:ok, header} <- peek_header(token),
@@ -66,23 +84,40 @@ defmodule SbAuthEx.Providers.OIDC.TokenVerifier do
   defp signing_key(header, config, jwks_uri) do
     with {:ok, keys} <- cached_jwks(config, jwks_uri) do
       case find_key(keys, header) do
-        {:ok, key} ->
-          {:ok, key}
-
-        :error ->
-          # Unknown kid — the environment may have rotated its keys.
-          with {:ok, fresh} <- fetch_jwks(config, jwks_uri) do
-            # Cache only when the key set actually changed: a refetch that
-            # still lacks the kid (misconfigured issuer) would otherwise
-            # rewrite :persistent_term — a VM-wide GC scan — on every login.
-            if fresh != keys, do: Cache.put(:jwks, jwks_uri, fresh)
-
-            case find_key(fresh, header) do
-              {:ok, key} -> {:ok, key}
-              :error -> {:error, :unknown_signing_key}
-            end
-          end
+        {:ok, key} -> {:ok, key}
+        # Unknown kid — the environment may have rotated its keys, or this is
+        # an attacker naming a key that never existed. Both look identical
+        # here, so the refetch is rate limited rather than trusted.
+        :error -> refetch_for_unknown_kid(header, config, jwks_uri, keys)
       end
+    end
+  end
+
+  defp refetch_for_unknown_kid(header, config, jwks_uri, keys) do
+    cooldown = Keyword.get(config, :jwks_unknown_kid_cooldown, @default_unknown_kid_cooldown)
+
+    # The gate is claimed *before* the fetch and only when it was open, so it
+    # costs one write per cooldown window and the race window is the gap
+    # between the read and the write rather than the whole fetch. Requests
+    # that read the open gate inside that gap all fetch; closing that off
+    # completely needs a process to serialize on, and SbAuthEx deliberately
+    # ships without a supervision tree (see the Cache moduledoc). The residual
+    # race is bounded by concurrency, not by attacker request rate, so it is
+    # left as is.
+    if Cache.claim(:jwks_gate, jwks_uri, cooldown) do
+      with {:ok, fresh} <- fetch_jwks(config, jwks_uri) do
+        # Cache only when the key set actually changed: a refetch that
+        # still lacks the kid (misconfigured issuer) would otherwise
+        # rewrite :persistent_term — a VM-wide GC scan — on every login.
+        if fresh != keys, do: Cache.put(:jwks, jwks_uri, fresh)
+
+        case find_key(fresh, header) do
+          {:ok, key} -> {:ok, key}
+          :error -> {:error, :unknown_signing_key}
+        end
+      end
+    else
+      {:error, :unknown_signing_key}
     end
   end
 

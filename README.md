@@ -275,6 +275,15 @@ under WorkOS no longer deletes the WorkOS user upstream (the OIDC provider's
 deletion step is a no-op). Drain or migrate pending deletions before
 switching, or handle the WorkOS cleanup in `on_delete_account`.
 
+**Verifying tokens outside the login flow:** apps that also accept the
+issuer's access tokens on an API (a bearer-token plug, say) reach the same
+verification path from unauthenticated requests. An unknown `kid` refetches
+the JWKS to absorb key rotation, rate limited to one refetch per
+`jwks_unknown_kid_cooldown` seconds (default 10) per issuer, so made-up `kid`s
+cannot drive outbound fetches — and cannot exhaust the shared HTTP connection
+pool that login's token exchange also uses. During a real key rotation this
+costs up to that many seconds before a token signed by the new key verifies.
+
 See `SbAuthEx.Providers.OIDC` for the full list of options (scopes, endpoint
 overrides, token auth method, algorithm allowlist, cache TTLs, extra authorize
 params).

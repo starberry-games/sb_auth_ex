@@ -51,6 +51,14 @@ defmodule SbAuthEx.Providers.OIDC do
     * `:jwks_max_stale` — how long an expired JWKS may keep serving when
       refreshing it fails, default 1800 seconds (stale discovery metadata is
       bounded at 24h)
+    * `:jwks_unknown_kid_cooldown` — seconds between JWKS refetches triggered
+      by an unknown `kid`, default 10. Token verification is reachable from
+      unauthenticated traffic (a bearer-token plug verifying an inbound access
+      token), so this bounds how often made-up `kid`s can drive an outbound
+      fetch; inside the window an unknown `kid` is refused without any HTTP
+      call. The trade-off is that a genuinely rotated key may be refused for
+      up to that long. `0` disables the gate — do not, if anything
+      unauthenticated verifies tokens.
     * `:req_options` — passed verbatim to `Req` (tests inject a `Req.Test` plug)
 
   ## What a login verifies
@@ -152,7 +160,7 @@ defmodule SbAuthEx.Providers.OIDC do
   def delete_user(_sb_id), do: :ok
 
   @doc """
-  Clears cached discovery metadata and JWKS.
+  Clears cached discovery metadata, JWKS and the unknown-`kid` refetch gate.
 
   Useful in tests and after config changes; production code never needs it —
   caches expire on their own and JWKS refetches on unknown `kid`.

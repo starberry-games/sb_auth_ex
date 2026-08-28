@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.1 — 2026-08-28
+
+### Fixed
+
+- **Unauthenticated traffic can no longer drive outbound JWKS fetches.** An
+  unknown `kid` still refetches the JWKS to absorb key rotation, but the
+  refetch is now gated to at most one per `:jwks_unknown_kid_cooldown` seconds
+  (default 10) per `jwks_uri`; inside the window an unknown `kid` fails with
+  `:unknown_signing_key` and no HTTP call. Previously each junk JWT carrying a
+  made-up `kid` bought one fetch (two, with the single retry). That was safe
+  while verification was only reachable after a successful token exchange, but
+  apps now call `TokenVerifier.verify/4` directly from unauthenticated
+  bearer-token plugs. The exposure was not bandwidth: Req shares one Finch
+  instance whose pools are per host and default to 50 connections, and
+  discovery, token exchange and JWKS all live on the issuer's host — so a few
+  junk requests per second could saturate that pool and time out *login's*
+  token exchange on checkout.
+
+  The gate has its own `:persistent_term` key and never touches the JWKS cache
+  entry's timestamp, so this traffic cannot extend the `jwks_max_stale` window
+  a revoked signing key falls out of. Trade-off, deliberate and short: during a
+  genuine rotation a token signed by a brand-new `kid` is refused until the
+  gate opens or the 300s TTL refresh lands. Set `jwks_unknown_kid_cooldown` to
+  tune it; `0` restores the previous behaviour and is not recommended for any
+  app that verifies tokens on unauthenticated requests.
+
 ## 0.8.0 — 2026-08-27
 
 ### Added

@@ -46,6 +46,29 @@ defmodule SbAuthEx.Providers.OIDC.Cache do
     end
   end
 
+  # A rate-limit gate, kept under its own key so claiming it can never extend
+  # a cached entry's freshness window. `claim/3` hands out at most one claim
+  # per `cooldown` seconds per key, and writes only when it does — at most one
+  # persistent_term write per window, the same write frequency as a normal TTL
+  # refresh, rather than one per request.
+  #
+  # Monotonic time: a wall-clock correction must not hold a gate shut.
+  def claim(kind, key, cooldown) do
+    now = System.monotonic_time(:second)
+
+    case :persistent_term.get({@root, kind, key}, nil) do
+      claimed_at when is_integer(claimed_at) and now - claimed_at < cooldown ->
+        false
+
+      _ ->
+        # A cooldown of 0 disables the gate. Recording the claim anyway would
+        # put a VM-wide GC scan on every request — worse than whatever the
+        # gate was pacing.
+        if cooldown > 0, do: :persistent_term.put({@root, kind, key}, now)
+        true
+    end
+  end
+
   def put(kind, key, value) do
     :persistent_term.put({@root, kind, key}, {System.system_time(:second), value})
     :ok
